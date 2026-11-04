@@ -1,63 +1,107 @@
 /*
- * Display bring-up for JC8012P4A1 (ESP32-P4, JD9365 + GSL3680).
- * Initializes the board BSP + LVGL and shows a hello screen with a button,
- * so we can confirm the panel lights up and the touch controller works.
+ * blt-esp-display firmware entry.
+ * Brings up the board (BSP + LVGL) and shows the OnLine screen. Until the USB
+ * link to a real BLT tester is wired, a synthetic discharge drives the UI so
+ * the screen and graph can be developed and demoed without hardware.
  */
 #include "esp_log.h"
 #include "lvgl.h"
 #include "bsp/esp-bsp.h"
 #include "bsp/display.h"
+#include "ui.h"
 
 static const char *TAG = "blt";
 
-static lv_obj_t *s_touch_label;
-static int s_touch_count;
+#define SIM_CELLS       14
+#define SIM_NOMINAL_AH  50.0f
+#define SIM_DT_S        30.0f   /* simulated seconds advanced per UI tick */
 
-static void btn_event_cb(lv_event_t *e)
+typedef struct {
+    float    v;      /* pack V */
+    float    i;      /* A, negative = discharge */
+    float    ah;     /* discharged capacity */
+    uint32_t t;      /* elapsed seconds */
+    float    temp;   /* C */
+    bool     done;
+} sim_state_t;
+
+static sim_state_t s_sim;
+
+static void sim_reset(sim_state_t *s)
 {
-    (void)e;
-    s_touch_count++;
-    lv_label_set_text_fmt(s_touch_label, "Touch OK: %d", s_touch_count);
-    ESP_LOGI(TAG, "touch %d", s_touch_count);
+    s->v = 53.3f;
+    s->i = -12.0f;
+    s->ah = 0.0f;
+    s->t = 0;
+    s->temp = 26.5f;
+    s->done = false;
 }
 
-static void build_ui(void)
+static void sim_step(sim_state_t *s, float dt_s)
 {
-    lv_obj_t *scr = lv_screen_active();
-    lv_obj_set_style_bg_color(scr, lv_color_hex(0x0b1020), 0);
-    lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
+    if (s->done) return;
+    s->ah += (s->i < 0 ? -s->i : s->i) * dt_s / 3600.0f;
+    s->t += (uint32_t)dt_s;
+    s->temp = 26.5f + s->ah * 0.25f;
+    /* linear sag with a knee near the end */
+    s->v = 53.3f - s->ah * 0.22f;
+    if (s->v < 44.0f) s->v = 44.0f - (s->ah - (53.3f - 44.0f) / 0.22f) * 0.15f;
+    if (s->v <= 42.0f) {
+        s->v = 42.0f;
+        s->i = 0.0f;
+        s->done = true;
+    }
+}
 
-    lv_obj_t *title = lv_label_create(scr);
-    lv_label_set_text(title, "BLT-ESP-DISPLAY");
-    lv_obj_set_style_text_color(title, lv_color_hex(0xf0f3ff), 0);
-    lv_obj_set_style_text_font(title, &lv_font_montserrat_24, 0);
-    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 28);
+static void sim_fill_sample(const sim_state_t *s, online_sample_t *o)
+{
+    o->voltage_v = s->v;
+    o->current_a = s->i;
+    o->capacity_ah = s->ah;
+    o->elapsed_s = s->t;
+    o->temp_c = s->temp;
+    o->state = s->done ? "DONE" : "DISCHARGE";
 
-    lv_display_t *disp = lv_display_get_default();
-    lv_obj_t *sub = lv_label_create(scr);
-    lv_label_set_text_fmt(sub, "JC8012P4A1  %dx%d  LVGL %d.%d.%d",
-                          (int)lv_display_get_horizontal_resolution(disp),
-                          (int)lv_display_get_vertical_resolution(disp),
-                          lv_version_major(), lv_version_minor(), lv_version_patch());
-    lv_obj_set_style_text_color(sub, lv_color_hex(0x9aa4c2), 0);
-    lv_obj_align(sub, LV_ALIGN_TOP_MID, 0, 72);
+    o->bms_present = true;
+    float soc = 100.0f - (s->ah / SIM_NOMINAL_AH) * 100.0f;
+    if (soc < 0) soc = 0;
+    o->soc_pct = (uint8_t)(soc + 0.5f);
+    o->bms_pack_v = s->v;
+    o->bms_temp_c = s->temp + 1.0f;
+    o->cell_count = SIM_CELLS;
 
-    lv_obj_t *btn = lv_button_create(scr);
-    lv_obj_set_size(btn, 320, 110);
-    lv_obj_align(btn, LV_ALIGN_CENTER, 0, -10);
-    lv_obj_set_style_bg_color(btn, lv_color_hex(0x2f6df6), 0);
-    lv_obj_set_style_radius(btn, 16, 0);
-    lv_obj_add_event_cb(btn, btn_event_cb, LV_EVENT_CLICKED, NULL);
-    lv_obj_t *bl = lv_label_create(btn);
-    lv_label_set_text(bl, "TAP ME");
-    lv_obj_set_style_text_font(bl, &lv_font_montserrat_24, 0);
-    lv_obj_center(bl);
+    /* per-cell voltages around pack/N, with an imbalance that grows as SoC drops */
+    float base_mv = (s->v * 1000.0f) / SIM_CELLS;
+    float spread = 4.0f + (100.0f - soc) * 0.6f;   /* mV, widens over discharge */
+    uint16_t lo = 0xFFFF, hi = 0;
+    for (int c = 0; c < SIM_CELLS; c++) {
+        float off = ((c % 5) - 2) * (spread / 2.0f);
+        if (c == SIM_CELLS - 1) off -= spread;      /* one weak cell */
+        uint16_t mv = (uint16_t)(base_mv + off);
+        o->cell_mv[c] = mv;
+        if (mv < lo) lo = mv;
+        if (mv > hi) hi = mv;
+    }
+    o->cell_min_mv = lo;
+    o->cell_max_mv = hi;
+    o->imbalance_mv = (uint16_t)(hi - lo);
+}
 
-    s_touch_label = lv_label_create(scr);
-    lv_label_set_text(s_touch_label, "Touch OK: 0");
-    lv_obj_set_style_text_color(s_touch_label, lv_color_hex(0x7CFFB2), 0);
-    lv_obj_set_style_text_font(s_touch_label, &lv_font_montserrat_22, 0);
-    lv_obj_align(s_touch_label, LV_ALIGN_CENTER, 0, 90);
+static void tick_cb(lv_timer_t *t)
+{
+    (void)t;
+    static int done_hold;
+    if (s_sim.done) {
+        if (++done_hold > 24) {     /* short rest, then restart the demo */
+            done_hold = 0;
+            sim_reset(&s_sim);
+        }
+    } else {
+        sim_step(&s_sim, SIM_DT_S);
+    }
+    online_sample_t o = {0};
+    sim_fill_sample(&s_sim, &o);
+    ui_online_update(&o);
 }
 
 void app_main(void)
@@ -75,9 +119,15 @@ void app_main(void)
     bsp_display_start_with_config(&cfg);
     bsp_display_backlight_on();
 
+    sim_reset(&s_sim);
+
     bsp_display_lock(0);
-    build_ui();
+    ui_online_create();
+    online_sample_t o = {0};
+    sim_fill_sample(&s_sim, &o);
+    ui_online_update(&o);
+    lv_timer_create(tick_cb, 250, NULL);   /* ~250 ms/tick, 30 s sim time each */
     bsp_display_unlock();
 
-    ESP_LOGI(TAG, "display bring-up done");
+    ESP_LOGI(TAG, "online screen up (simulated discharge)");
 }
