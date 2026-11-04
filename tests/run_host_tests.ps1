@@ -27,14 +27,19 @@ python "$here\gen_frames.py" | Out-File -Encoding ascii "$out\frames.hex"
 $inc_blt = Join-Path $root "firmware\components\blt_proto\include"
 $src_blt = Join-Path $root "firmware\components\blt_proto\blt_proto.c"
 $inc_bms = Join-Path $root "firmware\components\bms\include"
-$src_bms = Join-Path $root "firmware\components\bms\bms_jbd.c"
+# bms tests link against every bms source (shared bms_recalc_cells etc.)
+$src_bms = (Get-ChildItem (Join-Path $root "firmware\components\bms") -Filter *.c |
+            ForEach-Object { "`"$($_.FullName)`"" }) -join " "
 
-# each test: name, extra include, extra source, args
-$tests = @(
-    @{ name = "test_blt_proto"; inc = $inc_blt; src = $src_blt; args = "`"$out\frames.hex`"" }
-)
-if ((Test-Path $src_bms) -and (Test-Path "$here\host\test_bms_jbd.c")) {
-    $tests += @{ name = "test_bms_jbd"; inc = $inc_bms; src = $src_bms; args = "" }
+# discover tests/host/test_*.c and assign includes/sources/args by name
+$tests = @()
+foreach ($c in Get-ChildItem "$here\host" -Filter "test_*.c" | Sort-Object Name) {
+    $name = $c.BaseName
+    if ($name -eq "test_blt_proto") {
+        $tests += @{ name = $name; inc = $inc_blt; src = "`"$src_blt`""; args = "`"$out\frames.hex`"" }
+    } elseif ($name -like "test_bms*") {
+        $tests += @{ name = $name; inc = $inc_bms; src = $src_bms; args = "" }
+    }
 }
 
 $fail = 0
@@ -42,7 +47,7 @@ foreach ($t in $tests) {
     $exe = Join-Path $out ($t.name + ".exe")
     $csrc = Join-Path $here ("host\" + $t.name + ".c")
     # compile with cwd=$out so .obj/.pdb land there (avoids /Fo trailing-backslash quoting)
-    $cl = "cl /nologo /W4 /O2 /TC /I `"$($t.inc)`" `"$csrc`" `"$($t.src)`" /Fe:`"$($t.name).exe`""
+    $cl = "cl /nologo /W4 /O2 /TC /I `"$($t.inc)`" `"$csrc`" $($t.src) /Fe:`"$($t.name).exe`""
     cmd /c "`"$VcVars`" >nul 2>&1 && cd /d `"$out`" && $cl" | Write-Host
     if ($LASTEXITCODE -ne 0) { Write-Host "COMPILE FAILED: $($t.name)"; $fail++; continue }
     Write-Host "--- $($t.name) ---"

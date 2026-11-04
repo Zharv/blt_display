@@ -14,15 +14,18 @@ static int16_t be16s(const uint8_t *p)
 
 void bms_recalc_cells(bms_data_t *d)
 {
-    if (d->cell_count == 0) {
-        d->cell_min_mv = d->cell_max_mv = d->imbalance_mv = 0;
-        return;
-    }
     uint16_t lo = 0xFFFF, hi = 0;
+    uint8_t seen = 0;
     for (uint8_t i = 0; i < d->cell_count && i < BMS_MAX_CELLS; i++) {
         uint16_t v = d->cell_mv[i];
+        if (v == 0) continue;   /* skip unconnected cells (JK leaves them 0) */
         if (v < lo) lo = v;
         if (v > hi) hi = v;
+        seen++;
+    }
+    if (seen == 0) {
+        d->cell_min_mv = d->cell_max_mv = d->imbalance_mv = 0;
+        return;
     }
     d->cell_min_mv = lo;
     d->cell_max_mv = hi;

@@ -25,7 +25,7 @@
 |---|---|
 | `firmware/` | прошивка, ESP-IDF 5.5 + LVGL 9.x |
 | `firmware/components/blt_proto` | протокол тестера: збірка кадрів, валідація/розбір відповіді (чистий C) |
-| `firmware/components/bms` | нормалізований `bms_data_t` + драйвери `bms_jbd` (є), `bms_jk`/`bms_daly` (TODO) |
+| `firmware/components/bms` | нормалізований `bms_data_t` + драйвери `bms_jbd`, `bms_jk`, `bms_daly` |
 | `firmware/main` | USB-CDC, BLE-менеджер, модель сесії, сховище, UI, друк (TODO) |
 | `tools/blt_client.py` | той самий протокол на Python (клієнт + оракул для тестів) |
 | `tools/blt_sim.py` | симулятор тестера: синтетичний розряд поверх реального фреймінгу |
@@ -39,8 +39,8 @@ powershell -ExecutionPolicy Bypass -File tests\run_host_tests.ps1
 ```
 
 Статус: `blt_proto` 40/0 (звірено з Python-оракулом і двома контрольними кадрами),
-`bms_jbd` 19/0 (запит звірено з публічним кадром; поля відповіді — за специфікацією,
-чекають звірки з реальним дампом).
+`bms_jbd` 19/0, `bms_daly` 15/0, `bms_jk` 16/0 (поля відповідей — за публічними
+специфікаціями, чекають звірки з реальним дампом з кожного BMS).
 
 Демо потоку даних через симулятор тестера:
 

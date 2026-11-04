@@ -46,7 +46,7 @@ One test = **one battery**: a single tester channel + a single BLE connection.
 | Component  | Role | Status |
 |---|---|---|
 | `blt_proto` | BLT160/SmartIC frame build + response validate/parse (see docs/BLT_PROTOCOL.md). No IDF deps. | **done, host-tested (40/0)**, verified vs BLTView + 2 known frames |
-| `bms`       | Vendor-neutral `bms_data_t` + drivers `bms_jbd` (done), `bms_jk`, `bms_daly` (TODO). | JBD done, host-tested (19/0); fields pending a hardware capture |
+| `bms`       | Vendor-neutral `bms_data_t` + drivers `bms_jbd`, `bms_jk` (new 0x55AAEB90 protocol, 24S/32S), `bms_daly`. | **all three host-tested** (JBD 19/0, Daly 15/0, JK 16/0); field offsets per public specs, pending a hardware capture |
 | `report`    | Render summary + V/A discharge graph + cell/temp/imbalance to an offscreen canvas (screen preview *and* print raster). | TODO |
 | `print_ipp` | Minimal IPP client: mDNS `_ipp._tcp` discovery, Get-Printer-Attributes, Print-Job with `image/urf`. | TODO |
 
@@ -73,6 +73,8 @@ One test = **one battery**: a single tester channel + a single BLE connection.
   (`tools/blt_client.py`) and the two hand-verified frames; JBD against the public read-basic frame.
 - **Simulators** (`tools/`): `blt_sim.py` replays a synthetic discharge over the real framing so the
   client/session/UI can be developed without hardware. A BLE-BMS simulator is TODO.
+
+Host test status: `blt_proto` 40/0, `bms_jbd` 19/0, `bms_daly` 15/0, `bms_jk` 16/0.
 - **On-target smoke tests**: USB enumerate, BLE connect, one IPP job.
 
 ## Open / not reverse-engineered
