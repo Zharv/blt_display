@@ -1,0 +1,9 @@
+## IDF Component Manager Manifest File
+dependencies:
+  idf: ">=5.3"
+  lvgl/lvgl: "9.2.*"
+  # pin esp_lvgl_port < 2.7: 2.7+ needs LVGL 9.3+, but the BSP demo is on LVGL 9.2
+  # (otherwise esp_lvgl_port_disp.c fails on LV_COLOR_FORMAT_RGB565_SWAPPED).
+  espressif/esp_lvgl_port: "2.6.0"
+  # board BSP + LCD/touch drivers live in ../components (auto-discovered);
+  # the BSP pulls esp_lcd_jd9365, esp_lcd_touch_gsl3680, esp_codec_dev.
