@@ -1,0 +1,19 @@
+# ESP-IDF build output and generated config
+firmware/build/
+firmware/managed_components/
+firmware/sdkconfig
+firmware/sdkconfig.old
+firmware/dependencies.lock
+*.log
+
+# host tests
+tests/out/
+
+# proprietary vendor software / captures are not part of this repo
+*.exe
+*.mdb
+
+__pycache__/
+*.pyc
+.vscode/
+.idea/
