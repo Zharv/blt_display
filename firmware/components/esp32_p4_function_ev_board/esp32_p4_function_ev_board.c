@@ -477,6 +477,9 @@ esp_err_t bsp_display_new_with_handles(const bsp_display_config_t *config, bsp_l
     esp_lcd_dpi_panel_config_t dpi_config = JD9365_800_1280_PANEL_60HZ_DPI_CONFIG(LCD_COLOR_PIXEL_FORMAT_RGB565);
 #endif
     dpi_config.num_fbs = CONFIG_BSP_LCD_DPI_BUFFER_NUMS;
+    /* blt-esp-display: copy draw buffers into the frame buffer with the 2D-DMA
+     * instead of a CPU memcpy (flush was ~90 ms per frame). */
+    dpi_config.flags.use_dma2d = true;
 
     jd9365_vendor_config_t vendor_config = {
         .mipi_config = {
@@ -519,6 +522,10 @@ err:
     }
     return ret;
 }
+
+/* blt-esp-display: keep the touch handle so the app can re-map it after rotation */
+static esp_lcd_touch_handle_t s_touch;
+esp_lcd_touch_handle_t bsp_touch_get_handle(void) { return s_touch; }
 
 esp_err_t bsp_touch_new(const bsp_touch_config_t *config, esp_lcd_touch_handle_t *ret_touch)
 {
@@ -621,6 +628,7 @@ static lv_indev_t *bsp_display_indev_init(lv_display_t *disp)
     esp_lcd_touch_handle_t tp;
     BSP_ERROR_CHECK_RETURN_NULL(bsp_touch_new(NULL, &tp));
     assert(tp);
+    s_touch = tp;
 
     /* Add touch input (for selected screen) */
     const lvgl_port_touch_cfg_t touch_cfg = {

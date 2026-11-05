@@ -17,6 +17,8 @@
 #include "nimble/nimble_port_freertos.h"
 #include "host/ble_hs.h"
 #include "host/util/util.h"
+#include "services/gap/ble_svc_gap.h"
+#include "services/gatt/ble_svc_gatt.h"
 #include "esp_hosted_bt_host_stack.h"
 
 static const char *TAG = "bms_ble";
@@ -63,34 +65,14 @@ static int gap_event(struct ble_gap_event *ev, void *arg);
 
 /* ------------------------------------------------------------------ NVS */
 
-static void save_target(void)
+/* The chosen BMS lives for this session only: every battery has its own BMS,
+ * so nothing is auto-connected at boot. Older firmware saved it in NVS -
+ * drop that entry so it doesn't linger. */
+static void erase_legacy_target(void)
 {
     nvs_handle_t h;
     if (nvs_open(NVS_NS, NVS_READWRITE, &h) != ESP_OK) return;
-    nvs_set_blob(h, "dev", &s_target, sizeof s_target);
-    nvs_commit(h);
-    nvs_close(h);
-}
-
-static void forget_target(void)
-{
-    nvs_handle_t h;
-    if (nvs_open(NVS_NS, NVS_READWRITE, &h) != ESP_OK) return;
-    nvs_erase_key(h, "dev");
-    nvs_commit(h);
-    nvs_close(h);
-}
-
-static void load_target(void)
-{
-    nvs_handle_t h;
-    if (nvs_open(NVS_NS, NVS_READONLY, &h) != ESP_OK) return;
-    size_t len = sizeof s_target;
-    if (nvs_get_blob(h, "dev", &s_target, &len) == ESP_OK && len == sizeof s_target) {
-        s_target.name[sizeof s_target.name - 1] = '\0';
-        s_have_target = true;
-        ESP_LOGI(TAG, "saved BMS: %s", s_target.name[0] ? s_target.name : "(no name)");
-    }
+    if (nvs_erase_key(h, "dev") == ESP_OK) nvs_commit(h);
     nvs_close(h);
 }
 
@@ -126,6 +108,11 @@ static void copy_ascii(char *dst, size_t dn, const uint8_t *src, size_t sn)
     dst[j] = '\0';
 }
 
+/* link diagnostics (reset when a cell-info frame is accepted) */
+static uint32_t s_ntf, s_ntf_bytes, s_ntf_dropped, s_types[4];
+static bool s_kicked, s_started;
+static int s_small_logged;
+
 static void handle_frame(const uint8_t *f, size_t len)
 {
     if (len < JK_FRAME_LEN) return;
@@ -143,6 +130,12 @@ static void handle_frame(const uint8_t *f, size_t len)
         s_variant_hint = (hw_major >= 11) ? JK_VARIANT_32S : JK_VARIANT_24S;
         ESP_LOGI(TAG, "JK device: %s hw %s sw %s -> %s", vendor, hw, sw,
                  s_variant_hint == JK_VARIANT_32S ? "32S layout" : "24S layout");
+        /* like the JK app: device info first, then one request for the cell
+         * stream (only if it isn't running yet - every command beeps) */
+        if (s_data_us < s_link_us && !s_started) {
+            s_started = true;
+            send_cmd(JK_CMD_CELLINFO);
+        }
         return;
     }
     if (f[4] != JK_TYPE_CELLINFO) return;   /* settings (0x01) etc. ignored */
@@ -155,6 +148,9 @@ static void handle_frame(const uint8_t *f, size_t len)
     bool use32 = (sb < sa) || (sb == sa && s_variant_hint == JK_VARIANT_32S);
     const bms_data_t *pick = use32 ? &b : &a;
 
+    s_ntf = s_ntf_bytes = s_ntf_dropped = 0;
+    memset(s_types, 0, sizeof s_types);
+    s_kicked = false;
     xSemaphoreTake(s_lock, portMAX_DELAY);
     s_data = *pick;
     s_data_us = esp_timer_get_time();
@@ -172,9 +168,24 @@ static void handle_frame(const uint8_t *f, size_t len)
 
 static void jk_feed(const uint8_t *d, size_t n)
 {
+    s_ntf++;
+    s_ntf_bytes += n;
     bool hdr = n >= 4 && d[0] == JK_HDR0 && d[1] == JK_HDR1 && d[2] == JK_HDR2 && d[3] == JK_HDR3;
-    if (hdr) s_rx_len = 0;
-    else if (s_rx_len == 0) return;          /* tail of a frame we already used */
+    if (hdr) {
+        s_rx_len = 0;
+        if (n > 4) s_types[d[4] & 3]++;
+    } else if (s_rx_len == 0) {               /* tail of a frame we already used */
+        s_ntf_dropped++;
+        if (n < 20 && s_small_logged < 12) {  /* what does the JK say when it stops? */
+            s_small_logged++;
+            char hex[64];
+            size_t o = 0;
+            for (size_t i = 0; i < n && o + 3 < sizeof hex; i++) o += snprintf(hex + o, sizeof hex - o, "%02x ", d[i]);
+            ESP_LOGD(TAG, "small notify (%u B): %s", (unsigned)n, hex);   /* JK: "AT
+" pings */
+        }
+        return;
+    }
     if (s_rx_len + n > sizeof s_rx) { s_rx_len = 0; return; }
     memcpy(s_rx + s_rx_len, d, n);
     s_rx_len += n;
@@ -190,17 +201,28 @@ static void kick_cb(void *arg)
 {
     (void)arg;
     if (s_conn == BLE_HS_CONN_HANDLE_NONE) return;
-    /* JK streams cell info after 0x96; re-request if it went quiet. Some units
-     * stop notifying on a live link and ignore re-requests (seen after ~2 min):
-     * after 15 s of silence drop the link - the disconnect handler reconnects. */
+    /* JK streams cell info after 0x96; re-request once if it went quiet (every
+     * command makes the JK beep), and after 15 s of silence drop the link - the
+     * disconnect handler reconnects. */
     int64_t last = s_data_us > s_link_us ? s_data_us : s_link_us;
     int64_t quiet = esp_timer_get_time() - last;
     if (quiet > 15000000) {
-        ESP_LOGW(TAG, "no data for %d s - reconnecting", (int)(quiet / 1000000));
+        ESP_LOGW(TAG, "no data for %d s - reconnecting (since last frame: %lu notifies, %lu B, "
+                 "%lu dropped, types 1:%lu 2:%lu 3:%lu, rx %u)", (int)(quiet / 1000000),
+                 (unsigned long)s_ntf, (unsigned long)s_ntf_bytes, (unsigned long)s_ntf_dropped,
+                 (unsigned long)s_types[1], (unsigned long)s_types[2], (unsigned long)s_types[3],
+                 (unsigned)s_rx_len);
         esp_timer_stop(s_kick_t);
         ble_gap_terminate(s_conn, BLE_ERR_REM_USER_CONN_TERM);
-    } else if (quiet > 4000000) {
-        send_cmd(JK_CMD_CELLINFO);
+    } else if (quiet > 4000000 && !s_kicked) {
+        /* ask once: the JK beeps on every command it gets */
+        s_kicked = true;
+        ESP_LOGI(TAG, "quiet %d ms (%lu notifies, %lu B, %lu dropped) - re-requesting device + cell info",
+                 (int)(quiet / 1000), (unsigned long)s_ntf, (unsigned long)s_ntf_bytes,
+                 (unsigned long)s_ntf_dropped);
+        /* repeat the connect sequence: device info, then (on its reply) cells */
+        s_started = false;
+        send_cmd(JK_CMD_DEVINFO);
     }
 }
 
@@ -215,6 +237,10 @@ static int cccd_written(uint16_t conn, const struct ble_gatt_error *err,
     ESP_LOGI(TAG, "notifications on - requesting device + cell info");
     s_state = BMS_BLE_CONNECTED;
     s_link_us = esp_timer_get_time();
+    s_kicked = false;
+    s_started = false;
+    s_small_logged = 0;
+    s_ntf = s_ntf_bytes = s_ntf_dropped = 0;
     send_cmd(JK_CMD_DEVINFO);
     esp_timer_stop(s_kick_t);
     esp_timer_start_periodic(s_kick_t, 1500 * 1000);
@@ -441,6 +467,10 @@ static int gap_event(struct ble_gap_event *ev, void *arg)
 
     case BLE_GAP_EVENT_NOTIFY_RX: {
         if (ev->notify_rx.attr_handle != s_notify_handle) return 0;
+        if (!s_have_target) {          /* forgotten by the user: drop the link */
+            ble_gap_terminate(ev->notify_rx.conn_handle, BLE_ERR_REM_USER_CONN_TERM);
+            return 0;
+        }
         uint8_t buf[260];
         uint16_t len = OS_MBUF_PKTLEN(ev->notify_rx.om);
         if (len > sizeof buf) len = sizeof buf;
@@ -452,7 +482,30 @@ static int gap_event(struct ble_gap_event *ev, void *arg)
     case BLE_GAP_EVENT_MTU:
         return 0;
 
+    case BLE_GAP_EVENT_ENC_CHANGE:
+        ESP_LOGI(TAG, "gap: encryption change status %d", ev->enc_change.status);
+        return 0;
+
+    case BLE_GAP_EVENT_CONN_UPDATE:
+        ESP_LOGI(TAG, "gap: conn params updated (status %d)", ev->conn_update.status);
+        return 0;
+
+    case BLE_GAP_EVENT_L2CAP_UPDATE_REQ:
+        ESP_LOGI(TAG, "gap: peer asks conn params itvl %u-%u lat %u to %u",
+                 ev->conn_update_req.peer_params->itvl_min, ev->conn_update_req.peer_params->itvl_max,
+                 ev->conn_update_req.peer_params->latency, ev->conn_update_req.peer_params->supervision_timeout);
+        return 0;
+
+    case BLE_GAP_EVENT_PASSKEY_ACTION:
+        ESP_LOGW(TAG, "gap: passkey action %d requested", ev->passkey.params.action);
+        return 0;
+
+    case BLE_GAP_EVENT_REPEAT_PAIRING:
+        ESP_LOGW(TAG, "gap: repeat pairing");
+        return BLE_GAP_REPEAT_PAIRING_RETRY;
+
     default:
+        ESP_LOGD(TAG, "gap: event %d", ev->type);
         return 0;
     }
 }
@@ -493,7 +546,7 @@ esp_err_t bms_ble_start(void)
     esp_timer_create(&rc, &s_reconnect_t);
     esp_timer_create(&kc, &s_kick_t);
 
-    load_target();
+    erase_legacy_target();
 
     esp_hosted_bt_host_stack_cfg_t cfg = ESP_HOSTED_BT_HOST_STACK_CONFIG_DEFAULT();
     esp_err_t err = esp_hosted_bt_host_stack_setup(&cfg);
@@ -509,6 +562,12 @@ esp_err_t bms_ble_start(void)
         s_state = BMS_BLE_ERROR;
         return err;
     }
+    /* a minimal GATT server so the peer's ATT requests (Exchange MTU right
+     * after connecting) get answered - the JK goes silent after the 30 s ATT
+     * timeout otherwise */
+    ble_svc_gap_init();
+    ble_svc_gatt_init();
+    ble_svc_gap_device_name_set("BLT-160 bench");
     ble_hs_cfg.sync_cb = on_sync;
     ble_hs_cfg.reset_cb = on_reset;
     ble_att_set_preferred_mtu(247);
@@ -521,7 +580,6 @@ esp_err_t bms_ble_connect(const bms_ble_dev_t *dev)
     if (!s_synced) return ESP_ERR_INVALID_STATE;
     s_target = *dev;
     s_have_target = true;
-    save_target();
     if (s_conn != BLE_HS_CONN_HANDLE_NONE) {
         ble_gap_terminate(s_conn, BLE_ERR_REM_USER_CONN_TERM);  /* reconnects on disconnect */
     } else {
@@ -534,11 +592,12 @@ esp_err_t bms_ble_connect(const bms_ble_dev_t *dev)
 void bms_ble_disconnect(void)
 {
     s_have_target = false;
-    forget_target();
     esp_timer_stop(s_reconnect_t);
     esp_timer_stop(s_kick_t);
-    if (s_conn != BLE_HS_CONN_HANDLE_NONE) ble_gap_terminate(s_conn, BLE_ERR_REM_USER_CONN_TERM);
-    else ble_gap_conn_cancel();
+    int rc;
+    if (s_conn != BLE_HS_CONN_HANDLE_NONE) rc = ble_gap_terminate(s_conn, BLE_ERR_REM_USER_CONN_TERM);
+    else rc = ble_gap_conn_cancel();
+    ESP_LOGI(TAG, "disconnect + forget (conn %d): rc=%d", (int)s_conn, rc);
     xSemaphoreTake(s_lock, portMAX_DELAY);
     s_data_us = 0;
     s_frames = 0;
@@ -580,3 +639,4 @@ const char *bms_ble_state_str(bms_ble_state_t s)
     }
     return "?";
 }
+

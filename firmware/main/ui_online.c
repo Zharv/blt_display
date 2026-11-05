@@ -5,7 +5,9 @@
 #include "hist.h"
 
 #include <math.h>
+#include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #define CHART_PTS   120
@@ -33,8 +35,105 @@ static lv_obj_t *s_t_tag, *s_t_v, *s_t_a, *s_t_ah, *s_t_wh, *s_t_time, *s_t_temp
 /* bms */
 static lv_obj_t *s_b_title, *s_b_tag, *s_b_soc, *s_b_v, *s_b_a, *s_b_delta, *s_b_minmax, *s_b_temps;
 /* chart */
+/* The plot is rasterised straight into a canvas instead of using lv_chart:
+ * LVGL 9.2's chart makes one draw task per line segment, and with ~21 series x
+ * 120 points its O(n^2) task scheduler (is_independent) hung the LVGL task
+ * until the watchdog fired. Now a redraw is a single image blit. */
+#define AX_PRI 0
+#define AX_SEC 1
+#define PT_NONE LV_CHART_POINT_NONE
+typedef struct {
+    int32_t    v[CHART_PTS];
+    lv_color_t c;
+    bool       hidden;
+    uint8_t    axis;
+} pser_t;
+
+static pser_t s_ps[UI_MAX_CELLS + 4];
+static int s_ps_n;
+static int s_pts = CHART_PTS;
+static int32_t s_rng[2][2] = { { 0, 100 }, { 0, 100 } };
+static lv_draw_buf_t *s_plot_buf;
+
 static lv_obj_t *s_chart, *s_seg[2], *s_leg[4], *s_sc_l, *s_sc_r, *s_sc_b;
-static lv_chart_series_t *s_ser_ut, *s_ser_ub, *s_ser_i, *s_ser_d, *s_ser_c[UI_MAX_CELLS];
+static pser_t *s_ser_ut, *s_ser_ub, *s_ser_i, *s_ser_d, *s_ser_c[UI_MAX_CELLS];
+
+static pser_t *ps_add(lv_color_t c, int axis)
+{
+    pser_t *p = &s_ps[s_ps_n++];
+    p->c = c;
+    p->axis = (uint8_t)axis;
+    p->hidden = false;
+    for (int k = 0; k < CHART_PTS; k++) p->v[k] = PT_NONE;
+    return p;
+}
+
+static inline void ps_set(pser_t *p, int k, int32_t v) { if (k >= 0 && k < CHART_PTS) p->v[k] = v; }
+static inline void ps_hide(pser_t *p, bool h) { p->hidden = h; }
+static inline void ps_color(pser_t *p, lv_color_t c) { p->c = c; }
+static inline void ps_range(int axis, int32_t lo, int32_t hi) { s_rng[axis][0] = lo; s_rng[axis][1] = hi > lo ? hi : lo + 1; }
+static inline void ps_points(int n) { s_pts = n < 2 ? 2 : n > CHART_PTS ? CHART_PTS : n; }
+
+static void plot_line(uint16_t *fb, int sp, int x0, int y0, int x1, int y1, uint16_t c)
+{
+    int dx = abs(x1 - x0), sx = x0 < x1 ? 1 : -1;
+    int dy = -abs(y1 - y0), sy = y0 < y1 ? 1 : -1;
+    int err = dx + dy;
+    for (;;) {
+        if (x0 >= 0 && x0 < CHART_W) {           /* 2 px thick */
+            if (y0 >= 0 && y0 < CHART_H) fb[y0 * sp + x0] = c;
+            if (y0 + 1 >= 0 && y0 + 1 < CHART_H) fb[(y0 + 1) * sp + x0] = c;
+        }
+        if (x0 == x1 && y0 == y1) break;
+        int e2 = 2 * err;
+        if (e2 >= dy) { err += dy; x0 += sx; }
+        if (e2 <= dx) { err += dx; y0 += sy; }
+    }
+}
+
+static void plot_series(uint16_t *fb, int sp, const pser_t *p)
+{
+    int32_t lo = s_rng[p->axis][0], hi = s_rng[p->axis][1];
+    uint16_t c = lv_color_to_u16(p->c);
+    int px = 0, py = 0;
+    bool have = false;
+    for (int k = 0; k < s_pts; k++) {
+        if (p->v[k] == PT_NONE) { have = false; continue; }
+        int x = (int)((long)k * (CHART_W - 1) / (s_pts - 1));
+        long t = (long)(p->v[k] - lo) * (CHART_H - 2) / (hi - lo);
+        if (t < 0) t = 0;
+        if (t > CHART_H - 2) t = CHART_H - 2;
+        int y = CHART_H - 2 - (int)t;
+        if (have) plot_line(fb, sp, px, py, x, y, c);
+        px = x; py = y; have = true;
+    }
+}
+
+static void plot_render(void)
+{
+    if (!s_plot_buf) return;
+    uint16_t *fb = (uint16_t *)s_plot_buf->data;
+    int sp = (int)(s_plot_buf->header.stride / 2);
+    uint16_t bg = lv_color_to_u16(C_CARD), grid = lv_color_to_u16(C_LINE);
+    for (int y = 0; y < CHART_H; y++) {
+        uint16_t *row = fb + y * sp;
+        for (int x = 0; x < CHART_W; x++) row[x] = bg;
+    }
+    for (int i = 0; i < 5; i++) {                   /* 5 horizontal grid lines */
+        int y = i * (CHART_H - 1) / 4;
+        for (int x = 0; x < CHART_W; x++) fb[y * sp + x] = grid;
+    }
+    /* grey cells first, then the coloured series on top */
+    for (int pass = 0; pass < 2; pass++)
+        for (int i = 0; i < s_ps_n; i++) {
+            const pser_t *p = &s_ps[i];
+            if (p->hidden) continue;
+            bool grey = lv_color_eq(p->c, C_GRAYLINE);
+            if ((pass == 0) != grey) continue;
+            plot_series(fb, sp, p);
+        }
+    lv_obj_invalidate(s_chart);
+}
 static chart_mode_t s_mode;
 /* cells */
 static lv_obj_t *s_cells_hdr, *s_cell[UI_MAX_CELLS], *s_cell_no[UI_MAX_CELLS],
@@ -93,10 +192,44 @@ static lv_obj_t *mk_stat(lv_obj_t *p, int x, int y, str_id_t cap)
     return v;
 }
 
+/* Every lv_label_set_text / lv_obj_set_style_* invalidates and re-lays out the
+ * object even when nothing changed; with ~70 readouts refreshed 4x a second
+ * that kept the LVGL task at 100% CPU. Only touch what actually changed. */
+static void set_txt(lv_obj_t *l, const char *fmt, ...)
+{
+    char b[128];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(b, sizeof b, fmt, ap);
+    va_end(ap);
+    const char *cur = lv_label_get_text(l);
+    if (!cur || strcmp(cur, b) != 0) lv_label_set_text(l, b);
+}
+
+static void set_txt_color(lv_obj_t *o, lv_color_t c)
+{
+    if (!lv_color_eq(lv_obj_get_style_text_color(o, LV_PART_MAIN), c))
+        lv_obj_set_style_text_color(o, c, 0);
+}
+
+static void set_bg_color(lv_obj_t *o, lv_color_t c)
+{
+    if (!lv_color_eq(lv_obj_get_style_bg_color(o, LV_PART_MAIN), c))
+        lv_obj_set_style_bg_color(o, c, 0);
+}
+
+static void set_hidden(lv_obj_t *o, bool hide)
+{
+    if (lv_obj_has_flag(o, LV_OBJ_FLAG_HIDDEN) != hide) {
+        if (hide) lv_obj_add_flag(o, LV_OBJ_FLAG_HIDDEN);
+        else lv_obj_clear_flag(o, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
 static void set_tag(lv_obj_t *tag, const char *txt, lv_color_t c)
 {
-    lv_label_set_text(tag, txt);
-    lv_obj_set_style_text_color(tag, c, 0);
+    set_txt(tag, "%s", txt);
+    set_txt_color(tag, c);
 }
 
 /* ------------------------------------------------------------- scales */
@@ -122,9 +255,12 @@ static lv_obj_t *mk_scale(lv_obj_t *p, lv_scale_mode_t mode, int x, int y, int w
 static void scale_range(lv_obj_t *s, int lo, int hi, int ticks)
 {
     if (hi <= lo) hi = lo + 1;
-    lv_scale_set_range(s, lo, hi);
-    lv_scale_set_total_tick_count(s, ticks);
-    lv_scale_set_major_tick_every(s, 1);
+    if (lv_scale_get_range_min_value(s) != lo || lv_scale_get_range_max_value(s) != hi)
+        lv_scale_set_range(s, lo, hi);
+    if ((int)lv_scale_get_total_tick_count(s) != ticks) {
+        lv_scale_set_total_tick_count(s, ticks);
+        lv_scale_set_major_tick_every(s, 1);
+    }
 }
 
 /* round a span to a "nice" step so at most ~5 intervals are shown */
@@ -140,20 +276,27 @@ static int nice_step(int span)
 
 static void legend(int i, const char *txt, lv_color_t c)
 {
-    if (!txt) { lv_obj_add_flag(s_leg[i], LV_OBJ_FLAG_HIDDEN); return; }
-    lv_obj_clear_flag(s_leg[i], LV_OBJ_FLAG_HIDDEN);
-    lv_label_set_text_fmt(s_leg[i], "%s %s", LV_SYMBOL_MINUS, txt);
-    lv_obj_set_style_text_color(s_leg[i], c, 0);
+    set_hidden(s_leg[i], !txt);
+    if (!txt) return;
+    set_txt(s_leg[i], "%s %s", LV_SYMBOL_MINUS, txt);
+    set_txt_color(s_leg[i], c);
 }
+
+/* last visibility / colour applied to each cell series (-1 = unknown) */
+static int8_t s_cell_shown[UI_MAX_CELLS] = { [0 ... UI_MAX_CELLS - 1] = -1 };
+static int8_t s_cell_col[UI_MAX_CELLS]   = { [0 ... UI_MAX_CELLS - 1] = -1 };
 
 static void show_mode_series(void)
 {
     bool d = (s_mode == MODE_DISCHARGE);
-    lv_chart_hide_series(s_chart, s_ser_ut, !d);
-    lv_chart_hide_series(s_chart, s_ser_ub, !d);
-    lv_chart_hide_series(s_chart, s_ser_i, !d);
-    lv_chart_hide_series(s_chart, s_ser_d, d);
-    for (int c = 0; c < UI_MAX_CELLS; c++) lv_chart_hide_series(s_chart, s_ser_c[c], true);
+    ps_hide(s_ser_ut, !d);
+    ps_hide(s_ser_ub, !d);
+    ps_hide(s_ser_i, !d);
+    ps_hide(s_ser_d, d);
+    for (int c = 0; c < UI_MAX_CELLS; c++) {
+        ps_hide(s_ser_c[c], true);
+        s_cell_shown[c] = 0;
+    }
     for (int i = 0; i < 2; i++) {
         bool on = (i == (int)s_mode);
         lv_obj_set_style_bg_color(s_seg[i], on ? C_SEL : C_CARD2, 0);
@@ -173,17 +316,24 @@ void ui_online_set_chart_mode(int mode)
     ui_online_chart_refresh();
 }
 
-static void fill_none(lv_chart_series_t *s)
+static void fill_none(pser_t *s)
 {
-    for (int k = 0; k < CHART_PTS; k++) lv_chart_set_value_by_id(s_chart, s, k, LV_CHART_POINT_NONE);
+    for (int k = 0; k < CHART_PTS; k++) ps_set(s, k, LV_CHART_POINT_NONE);
 }
 
 void ui_online_chart_refresh(void)
 {
-    if (!s_chart) return;
+    if (!s_chart || lv_obj_get_screen(s_chart) != lv_screen_active()) return;
+    static int last_n = -1, last_mode = -1;
+    static const hist_pt_t *last_tail;
     int n = hist_count();
+    const hist_pt_t *tail = n ? hist_at(n - 1) : NULL;
+    uint32_t tail_t = tail ? tail->t_s : 0;
+    static uint32_t last_t;
+    if (n == last_n && (int)s_mode == last_mode && tail == last_tail && tail_t == last_t) return;
+    last_n = n; last_mode = (int)s_mode; last_tail = tail; last_t = tail_t;
     int pts = n < 2 ? 2 : (n < CHART_PTS ? n : CHART_PTS);
-    lv_chart_set_point_count(s_chart, pts);
+    ps_points(pts);
 
     uint32_t t_end = n ? hist_at(n - 1)->t_s : 0;
     int mins = (int)((t_end + 59) / 60);
@@ -194,7 +344,7 @@ void ui_online_chart_refresh(void)
 
     if (n < 2) {
         fill_none(s_ser_ut); fill_none(s_ser_ub); fill_none(s_ser_i); fill_none(s_ser_d);
-        lv_chart_refresh(s_chart);
+        plot_render();
         return;
     }
     /* the chart x-axis spans [0, tmax]; samples are placed by index, so stretch
@@ -216,17 +366,17 @@ void ui_online_chart_refresh(void)
         vhi = ((vhi + vst - 1) / vst) * vst;
         int ist = nice_step((int)ceilf(imax) + 1);
         int ihi = (((int)ceilf(imax) + ist) / ist) * ist;
-        lv_chart_set_range(s_chart, LV_CHART_AXIS_PRIMARY_Y, vlo * 1000, vhi * 1000);
-        lv_chart_set_range(s_chart, LV_CHART_AXIS_SECONDARY_Y, 0, ihi * 10);
+        ps_range(AX_PRI, vlo * 1000, vhi * 1000);
+        ps_range(AX_SEC, 0, ihi * 10);
         scale_range(s_sc_l, vlo, vhi, (vhi - vlo) / vst + 1);
         scale_range(s_sc_r, 0, ihi, ihi / ist + 1);
 
         for (int k = 0; k < pts; k++) {
             const hist_pt_t *p = hist_at((int)((long)k * (n - 1) / (pts - 1)));
-            lv_chart_set_value_by_id(s_chart, s_ser_ut, k, (int32_t)(p->v_t * 1000));
-            lv_chart_set_value_by_id(s_chart, s_ser_ub, k,
+            ps_set(s_ser_ut, k, (int32_t)(p->v_t * 1000));
+            ps_set(s_ser_ub, k,
                                      p->v_b > 0 ? (int32_t)(p->v_b * 1000) : LV_CHART_POINT_NONE);
-            lv_chart_set_value_by_id(s_chart, s_ser_i, k, (int32_t)(fabsf(p->i_t) * 10));
+            ps_set(s_ser_i, k, (int32_t)(fabsf(p->i_t) * 10));
         }
         char l1[48], l2[48], l3[48];
         snprintf(l1, sizeof l1, "%s, %s", tr(S_CH_U_TESTER), tr(S_U_V));
@@ -258,7 +408,7 @@ void ui_online_chart_refresh(void)
             fill_none(s_ser_d);
             legend(0, tr(S_BMS_NO_LINK), C_SUB);
             legend(1, NULL, C_SUB); legend(2, NULL, C_SUB); legend(3, NULL, C_SUB);
-            lv_chart_refresh(s_chart);
+            plot_render();
             return;
         }
         int dst = nice_step((int)ceilf(dabs) * 2);
@@ -267,8 +417,8 @@ void ui_online_chart_refresh(void)
         int rst = nice_step((int)ceilf(dmax));
         int rhi = (((int)ceilf(dmax) + rst - 1) / rst) * rst;
         if (rhi < 5) rhi = 5;
-        lv_chart_set_range(s_chart, LV_CHART_AXIS_PRIMARY_Y, -dr * 10, dr * 10);
-        lv_chart_set_range(s_chart, LV_CHART_AXIS_SECONDARY_Y, 0, rhi * 10);
+        ps_range(AX_PRI, -dr * 10, dr * 10);
+        ps_range(AX_SEC, 0, rhi * 10);
         scale_range(s_sc_l, -dr, dr, 5);
         scale_range(s_sc_r, 0, rhi, rhi / rst + 1);
 
@@ -282,11 +432,14 @@ void ui_online_chart_refresh(void)
             }
         }
         for (int c = 0; c < UI_MAX_CELLS; c++) {
-            bool use = c < ncell;
-            lv_chart_hide_series(s_chart, s_ser_c[c], !use);
+            int use = c < ncell;
+            if (s_cell_shown[c] != use) { ps_hide(s_ser_c[c], !use); s_cell_shown[c] = (int8_t)use; }
             if (!use) continue;
-            lv_chart_set_series_color(s_chart, s_ser_c[c],
-                                      c == hi_c ? C_RED : c == lo_c ? C_BLUE : C_GRAYLINE);
+            int k = c == hi_c ? 1 : c == lo_c ? 2 : 0;
+            if (s_cell_col[c] != k) {
+                ps_color(s_ser_c[c], k == 1 ? C_RED : k == 2 ? C_BLUE : C_GRAYLINE);
+                s_cell_col[c] = (int8_t)k;
+            }
         }
         for (int k = 0; k < pts; k++) {
             const hist_pt_t *p = hist_at((int)((long)k * (n - 1) / (pts - 1)));
@@ -297,12 +450,12 @@ void ui_online_chart_refresh(void)
                 if (c < p->n) {
                     float d = p->cell[c] - mean;
                     lo = fminf(lo, d); hi = fmaxf(hi, d);
-                    lv_chart_set_value_by_id(s_chart, s_ser_c[c], k, (int32_t)(d * 10));
+                    ps_set(s_ser_c[c], k, (int32_t)(d * 10));
                 } else {
-                    lv_chart_set_value_by_id(s_chart, s_ser_c[c], k, LV_CHART_POINT_NONE);
+                    ps_set(s_ser_c[c], k, LV_CHART_POINT_NONE);
                 }
             }
-            lv_chart_set_value_by_id(s_chart, s_ser_d, k,
+            ps_set(s_ser_d, k,
                                      p->n >= 2 ? (int32_t)((hi - lo) * 10) : LV_CHART_POINT_NONE);
         }
         /* draw the highlighted cells and the delta on top of the grey ones */
@@ -315,7 +468,7 @@ void ui_online_chart_refresh(void)
         legend(2, l3, C_BLUE);
         legend(3, tr(S_CH_OTHERS), C_GRAYLINE);
     }
-    lv_chart_refresh(s_chart);
+    plot_render();
 }
 
 /* ------------------------------------------------------------- cells */
@@ -345,27 +498,38 @@ static void update_cells(const online_sample_t *s)
     int n = s->bms_present ? s->cell_count : 0;
     if (n > UI_MAX_CELLS) n = UI_MAX_CELLS;
     cells_layout(n);
-    lv_label_set_text_fmt(s_cells_hdr, "%s  ·  %dS", tr(S_CELLS), n);
+    set_txt(s_cells_hdr, "%s  ·  %dS", tr(S_CELLS), n);
     if (!n) return;
 
     int lo = s->cell_min_mv - 15, hi = s->cell_max_mv + 15;
     if (hi <= lo) hi = lo + 1;
     int bar_h = 46;
+    static uint16_t last_mv[UI_MAX_CELLS];
+    static uint32_t last_key[UI_MAX_CELLS];
     for (int i = 0; i < n; i++) {
         uint16_t mv = s->cell_mv[i];
+        /* one dirty area per changed tile instead of bar + label + border */
+        uint32_t key = ((uint32_t)(i == s->cell_max_idx) << 0) | ((uint32_t)(i == s->cell_min_idx) << 1) |
+                       (((s->balance_bits >> i) & 1u) << 2) | ((uint32_t)(s->imbalance_mv >= 5) << 3) |
+                       ((uint32_t)(lo & 0xFFF) << 4) | ((uint32_t)(hi & 0xFFF) << 16);
+        if (mv == last_mv[i] && key == last_key[i]) continue;
+        last_mv[i] = mv;
+        last_key[i] = key;
+        lv_obj_invalidate(s_cell[i]);
         int h = 4 + (int)((long)(mv - lo) * bar_h / (hi - lo));
         if (h < 4) h = 4;
         if (h > bar_h + 4) h = bar_h + 4;
-        lv_obj_set_height(s_cell_bar[i], h);
+        if (lv_obj_get_style_height(s_cell_bar[i], LV_PART_MAIN) != h) lv_obj_set_height(s_cell_bar[i], h);
         lv_color_t c = C_GREEN;
         if (s->imbalance_mv >= 5) {
             if (i == s->cell_max_idx) c = C_RED;
             else if (i == s->cell_min_idx) c = C_BLUE;
         }
-        lv_obj_set_style_bg_color(s_cell_bar[i], c, 0);
-        bool bal = (s->balance_bits >> i) & 1u;
-        lv_obj_set_style_border_width(s_cell[i], bal ? 2 : 0, 0);
-        lv_label_set_text_fmt(s_cell_v[i], "%d.%03d", mv / 1000, mv % 1000);
+        set_bg_color(s_cell_bar[i], c);
+        int bw = ((s->balance_bits >> i) & 1u) ? 2 : 0;
+        if (lv_obj_get_style_border_width(s_cell[i], LV_PART_MAIN) != bw)
+            lv_obj_set_style_border_width(s_cell[i], bw, 0);
+        set_txt(s_cell_v[i], "%d.%03d", mv / 1000, mv % 1000);
     }
 }
 
@@ -436,25 +600,17 @@ lv_obj_t *ui_online_create(void)
     lv_obj_set_style_pad_column(leg, 18, 0);
     for (int i = 0; i < 4; i++) s_leg[i] = mk_label(leg, "", 16, C_SUB);
 
-    s_chart = lv_chart_create(cc);
+    s_chart = lv_canvas_create(cc);
+    s_plot_buf = lv_draw_buf_create(CHART_W, CHART_H, LV_COLOR_FORMAT_RGB565, LV_STRIDE_AUTO);
+    lv_canvas_set_draw_buf(s_chart, s_plot_buf);
     lv_obj_set_pos(s_chart, CHART_X, CHART_Y);
-    lv_obj_set_size(s_chart, CHART_W, CHART_H);
-    lv_chart_set_type(s_chart, LV_CHART_TYPE_LINE);
-    lv_chart_set_point_count(s_chart, CHART_PTS);
-    lv_chart_set_div_line_count(s_chart, 5, 0);
-    lv_obj_set_style_bg_opa(s_chart, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(s_chart, 0, 0);
-    lv_obj_set_style_pad_all(s_chart, 0, 0);
-    lv_obj_set_style_line_color(s_chart, C_LINE, LV_PART_MAIN);
-    lv_obj_set_style_line_width(s_chart, 2, LV_PART_ITEMS);
-    lv_obj_set_style_width(s_chart, 0, LV_PART_INDICATOR);
-    lv_obj_set_style_height(s_chart, 0, LV_PART_INDICATOR);
-    for (int c = 0; c < UI_MAX_CELLS; c++)
-        s_ser_c[c] = lv_chart_add_series(s_chart, C_GRAYLINE, LV_CHART_AXIS_PRIMARY_Y);
-    s_ser_d = lv_chart_add_series(s_chart, C_AMBER, LV_CHART_AXIS_SECONDARY_Y);
-    s_ser_i = lv_chart_add_series(s_chart, C_BLUE, LV_CHART_AXIS_SECONDARY_Y);
-    s_ser_ub = lv_chart_add_series(s_chart, C_VIOLET, LV_CHART_AXIS_PRIMARY_Y);
-    s_ser_ut = lv_chart_add_series(s_chart, C_GREEN, LV_CHART_AXIS_PRIMARY_Y);
+    s_ps_n = 0;
+    for (int c = 0; c < UI_MAX_CELLS; c++) s_ser_c[c] = ps_add(C_GRAYLINE, AX_PRI);
+    s_ser_d = ps_add(C_AMBER, AX_SEC);
+    s_ser_i = ps_add(C_BLUE, AX_SEC);
+    s_ser_ub = ps_add(C_VIOLET, AX_PRI);
+    s_ser_ut = ps_add(C_GREEN, AX_PRI);
+    plot_render();                      /* the draw buffer starts uninitialised */
 
     s_sc_l = mk_scale(cc, LV_SCALE_MODE_VERTICAL_LEFT, CHART_X - 56, CHART_Y, 56, CHART_H);
     s_sc_r = mk_scale(cc, LV_SCALE_MODE_VERTICAL_RIGHT, CHART_X + CHART_W, CHART_Y, 56, CHART_H);
@@ -515,24 +671,24 @@ void ui_online_update(const online_sample_t *s)
     if (!s) return;
 
     set_tag(s_t_tag, tr(s->tester_live ? S_LIVE : S_SIMULATED), s->tester_live ? C_GREEN : C_AMBER);
-    lv_label_set_text_fmt(s_t_v, "%.2f", s->voltage_v);
-    lv_label_set_text_fmt(s_t_a, "%s%.1f", s->current_a < 0 ? "−" : "", fabsf(s->current_a));
-    lv_label_set_text_fmt(s_t_ah, "%.2f %s", s->capacity_ah, tr(S_U_AH));
-    lv_label_set_text_fmt(s_t_wh, "%.0f %s", s->energy_wh, tr(S_U_WH));
-    lv_label_set_text_fmt(s_t_time, "%02u:%02u:%02u", (unsigned)(s->elapsed_s / 3600),
+    set_txt(s_t_v, "%.2f", s->voltage_v);
+    set_txt(s_t_a, "%s%.1f", s->current_a < 0 ? "−" : "", fabsf(s->current_a));
+    set_txt(s_t_ah, "%.2f %s", s->capacity_ah, tr(S_U_AH));
+    set_txt(s_t_wh, "%.0f %s", s->energy_wh, tr(S_U_WH));
+    set_txt(s_t_time, "%02u:%02u:%02u", (unsigned)(s->elapsed_s / 3600),
                           (unsigned)(s->elapsed_s / 60 % 60), (unsigned)(s->elapsed_s % 60));
-    lv_label_set_text_fmt(s_t_temp, "%.1f °C", s->temp_c);
+    set_txt(s_t_temp, "%.1f °C", s->temp_c);
 
     if (s->bms_present) {
-        lv_label_set_text_fmt(s_b_title, "BMS  ·  %s", s->bms_name[0] ? s->bms_name : "—");
+        set_txt(s_b_title, "BMS  ·  %s", s->bms_name[0] ? s->bms_name : "—");
         set_tag(s_b_tag, tr(s->bms_live ? S_LIVE : S_SIMULATED), s->bms_live ? C_GREEN : C_AMBER);
-        lv_label_set_text_fmt(s_b_soc, "%u", s->soc_pct);
-        lv_label_set_text_fmt(s_b_v, "%.2f", s->bms_pack_v);
-        lv_label_set_text_fmt(s_b_a, "%s%.1f", s->bms_current_a < 0 ? "−" : "", fabsf(s->bms_current_a));
-        lv_label_set_text_fmt(s_b_delta, "%u", s->imbalance_mv);
-        lv_obj_set_style_text_color(s_b_delta, s->imbalance_mv >= 50 ? C_RED : C_AMBER, 0);
+        set_txt(s_b_soc, "%u", s->soc_pct);
+        set_txt(s_b_v, "%.2f", s->bms_pack_v);
+        set_txt(s_b_a, "%s%.1f", s->bms_current_a < 0 ? "−" : "", fabsf(s->bms_current_a));
+        set_txt(s_b_delta, "%u", s->imbalance_mv);
+        set_txt_color(s_b_delta, s->imbalance_mv >= 50 ? C_RED : C_AMBER);
         if (s->cell_count)
-            lv_label_set_text_fmt(s_b_minmax, "min #%u %d.%03d   ·   max #%u %d.%03d",
+            set_txt(s_b_minmax, "min #%u %d.%03d   ·   max #%u %d.%03d",
                                   s->cell_min_idx + 1, s->cell_min_mv / 1000, s->cell_min_mv % 1000,
                                   s->cell_max_idx + 1, s->cell_max_mv / 1000, s->cell_max_mv % 1000);
         char t[80] = "";
@@ -541,16 +697,16 @@ void ui_online_update(const online_sample_t *s)
         for (int i = 0; i < s->temp_count && i < 4; i++)
             o += snprintf(t + o, sizeof t - o, "%s%s %.1f", i ? "  ·  " : "", tn[i], s->temp_dc[i] / 10.0f);
         if (s->temp_count) snprintf(t + o, sizeof t - o, " °C");
-        lv_label_set_text(s_b_temps, t);
+        set_txt(s_b_temps, "%s", t);
     } else {
-        lv_label_set_text(s_b_title, "BMS");
+        set_txt(s_b_title, "BMS");
         set_tag(s_b_tag, tr(S_BMS_NO_LINK), C_SUB);
-        lv_label_set_text(s_b_soc, "--");
-        lv_label_set_text(s_b_v, "--");
-        lv_label_set_text(s_b_a, "--");
-        lv_label_set_text(s_b_delta, "--");
-        lv_label_set_text(s_b_minmax, "");
-        lv_label_set_text(s_b_temps, "");
+        set_txt(s_b_soc, "--");
+        set_txt(s_b_v, "--");
+        set_txt(s_b_a, "--");
+        set_txt(s_b_delta, "--");
+        set_txt(s_b_minmax, "");
+        set_txt(s_b_temps, "");
     }
     update_cells(s);
 }

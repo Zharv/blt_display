@@ -88,7 +88,7 @@ static const char *const STR[S__COUNT][2] = {
     [S_BMS_NOTHING]     = { "нічого не знайдено — BMS не спить?", "nothing found - is the BMS awake?" },
     [S_BMS_CONNECTING]  = { "підключення до %s…", "connecting to %s…" },
     [S_BMS_NOT_READY]   = { "Bluetooth ще не готовий", "Bluetooth not ready yet" },
-    [S_BMS_FORGOT]      = { "від'єднано, BMS забуто", "disconnected, BMS forgotten" },
+    [S_BMS_FORGOT]      = { "від'єднано — можна вибрати іншу BMS", "disconnected — pick another BMS" },
     [S_DISCONNECT]      = { "Від'єднати", "Disconnect" },
 
     [S_BLE_OFF]         = { "Bluetooth вимкнено", "Bluetooth off" },

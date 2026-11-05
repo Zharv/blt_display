@@ -38,16 +38,16 @@ typedef enum {
 } bms_ble_state_t;
 
 /* Bring up the hosted BT controller + NimBLE. Call after
- * esp_hosted_connect_to_slave(). Auto-reconnects to the last saved BMS. */
+ * esp_hosted_connect_to_slave(). Nothing is auto-connected at boot. */
 esp_err_t bms_ble_start(void);
 
 /* Blocking active scan for `ms`; returns devices found (JK ones first). */
 int bms_ble_scan(bms_ble_dev_t *out, int max, uint32_t ms);
 
-/* Connect to dev (remembered in NVS for auto-reconnect). Returns at once. */
+/* Connect to dev for this session (re-connects if the link drops). Returns at once. */
 esp_err_t bms_ble_connect(const bms_ble_dev_t *dev);
 
-/* Drop the link and forget the saved BMS. */
+/* Drop the link and end the session (no more re-connects). */
 void bms_ble_disconnect(void);
 
 /* Current state; name (may be NULL) gets the connected/target device name. */

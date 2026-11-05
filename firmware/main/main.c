@@ -12,11 +12,14 @@
 #include <sys/time.h>
 
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "esp_netif_sntp.h"
 #include "nvs_flash.h"
 #include "lvgl.h"
 #include "bsp/esp-bsp.h"
 #include "bsp/display.h"
+#include "esp_lcd_touch.h"
+#include "bsp/touch.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -39,8 +42,8 @@ static const char *TAG = "blt";
 
 #define SIM_CELLS       16
 #define SIM_NOMINAL_AH  50.0f
-#define SIM_DT_S        30.0f
-#define TICK_MS         250
+#define SIM_DT_S        60.0f
+#define TICK_MS         500
 
 typedef struct {
     float v, i, ah, wh, temp;
@@ -185,7 +188,7 @@ static void frame_refresh(const online_sample_t *o)
     st.bt_text = bt;
 
     if (--slow <= 0) {             /* NVS read: every ~2 s */
-        slow = 8;
+        slow = 4;
         netw_printer_t p;
         bool have = netw_get_printer(&p) || strncmp(ssid, "DIRECT-", 7) == 0;
         prn = !have ? IND_OFF : wifi_up ? IND_OK : IND_BUSY;
@@ -200,12 +203,15 @@ static void frame_refresh(const online_sample_t *o)
     ui_frame_update(&st);
 }
 
+static lv_obj_t *s_scr[TAB__COUNT];
+
 static void tick_cb(lv_timer_t *t)
 {
     (void)t;
+    int64_t t0 = esp_timer_get_time();
     static int done_hold, chart_div, last_live = -1;
     if (s_sim.done) {
-        if (++done_hold > 40) { done_hold = 0; sim_reset(&s_sim); hist_reset(); }
+        if (++done_hold > 20) { done_hold = 0; sim_reset(&s_sim); hist_reset(); }
     } else {
         sim_step(&s_sim, SIM_DT_S);
     }
@@ -216,9 +222,21 @@ static void tick_cb(lv_timer_t *t)
         last_live = o.bms_live;
     }
     if (!s_sim.done) hist_add(&o);
-    ui_online_update(&o);
-    if (++chart_div >= 4) { chart_div = 0; ui_online_chart_refresh(); }
+    if (lv_screen_active() == s_scr[TAB_ONLINE]) ui_online_update(&o);
+    if (++chart_div >= 4) { chart_div = 0; ui_online_chart_refresh(); }   /* ~2 s */
     frame_refresh(&o);
+
+    /* cost of our own UI work per tick (render time is on the perf monitor) */
+    static int64_t sum, mx;
+    static int cnt;
+    int64_t dt = esp_timer_get_time() - t0;
+    sum += dt;
+    if (dt > mx) mx = dt;
+    if (++cnt == 20) {
+        ESP_LOGD(TAG, "tick avg %lld us, max %lld us", sum / cnt, mx);
+        sum = mx = 0;
+        cnt = 0;
+    }
 }
 
 /* --------------------------------------------------------------- print -- */
@@ -321,8 +339,6 @@ static void netw_task(void *arg)
     vTaskDelete(NULL);
 }
 
-static lv_obj_t *s_scr[TAB__COUNT];
-
 static void nav_cb(tab_t tab)
 {
     if (tab < TAB__COUNT && s_scr[tab] && lv_screen_active() != s_scr[tab]) {
@@ -338,6 +354,42 @@ void snap_nav(int tab)
     nav_cb((tab_t)tab);
     bsp_display_unlock();
 }
+
+/* Log where each touch lands (development aid: checks the rotated mapping). */
+static void touch_log_cb(lv_timer_t *t)
+{
+    static bool was;
+    lv_indev_t *in = (lv_indev_t *)lv_timer_get_user_data(t);
+    bool now = lv_indev_get_state(in) == LV_INDEV_STATE_PRESSED;
+    if (now && !was) {
+        lv_point_t p;
+        lv_indev_get_point(in, &p);
+        lv_obj_t *o = lv_indev_search_obj(lv_screen_active(), &p);
+        const char *what = "-";
+        if (o && lv_obj_check_type(o, &lv_label_class)) what = lv_label_get_text(o);
+        else if (o && lv_obj_get_child_count(o) && lv_obj_check_type(lv_obj_get_child(o, 0), &lv_label_class))
+            what = lv_label_get_text(lv_obj_get_child(o, 0));
+        else if (o) what = "(obj)";
+        ESP_LOGD("touch", "press %d,%d -> %.40s", (int)p.x, (int)p.y, what);
+    }
+    was = now;
+}
+
+void snap_bms_connect(void)
+{
+    bms_ble_dev_t devs[12];
+    int n = bms_ble_scan(devs, 12, 5000);
+    for (int i = 0; i < n; i++) {
+        if (devs[i].is_jk) {
+            ESP_LOGI(TAG, "console: connecting to %s", devs[i].name);
+            bms_ble_connect(&devs[i]);
+            return;
+        }
+    }
+    ESP_LOGW(TAG, "console: no JK found (%d devices)", n);
+}
+
+void snap_bms_disconnect(void) { bms_ble_disconnect(); }
 
 void snap_chart(int mode)
 {
@@ -368,6 +420,17 @@ void app_main(void)
     bsp_display_lock(0);
     bsp_display_rotate(disp, LV_DISPLAY_ROTATION_90);
     bsp_display_unlock();
+    /* The PPA turns the picture the opposite way to LVGL's ROTATION_90, so
+     * touches landed 180 deg off (tap at x,y arrived at 1279-x, 799-y).
+     * Flip the touch controller's mapping to match the picture. */
+    esp_lcd_touch_handle_t tp = bsp_touch_get_handle();
+    if (tp) {
+        bool mx = false, my = false;
+        esp_lcd_touch_get_mirror_x(tp, &mx);
+        esp_lcd_touch_get_mirror_y(tp, &my);
+        esp_lcd_touch_set_mirror_x(tp, !mx);
+        esp_lcd_touch_set_mirror_y(tp, !my);
+    }
     bsp_display_backlight_on();
 
     sim_reset(&s_sim);
@@ -389,6 +452,8 @@ void app_main(void)
     ui_online_update(&o);
     frame_refresh(&o);
     lv_timer_create(tick_cb, TICK_MS, NULL);
+    lv_indev_t *touch = bsp_display_get_input_dev();
+    if (touch) lv_timer_create(touch_log_cb, 30, touch);
     bsp_display_unlock();
 
     snap_start();

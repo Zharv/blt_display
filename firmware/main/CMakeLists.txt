@@ -20,6 +20,7 @@ idf_component_register(
     EMBED_FILES "fonts/Montserrat-Medium.ttf"
     REQUIRES
         esp32_p4_function_ev_board
+        espressif__esp_lcd_touch
         report
         print_ipp
         bms

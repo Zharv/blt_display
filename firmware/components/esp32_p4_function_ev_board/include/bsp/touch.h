@@ -46,6 +46,10 @@ typedef struct {
  */
 esp_err_t bsp_touch_new(const bsp_touch_config_t *config, esp_lcd_touch_handle_t *ret_touch);
 
+/* Touch handle created by bsp_display_start*() (NULL before). Added for
+ * blt-esp-display to flip the touch mapping after display rotation. */
+esp_lcd_touch_handle_t bsp_touch_get_handle(void);
+
 #ifdef __cplusplus
 }
 #endif

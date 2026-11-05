@@ -9,4 +9,9 @@ endif()
 set(SDKCONFIG_DEFAULTS "${sdkdefaults}")
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
+
+# LVGL keeps 32 dirty areas per frame and repaints the WHOLE screen when more
+# objects change; the OnLine view updates ~50 readouts at once. Allow more.
+idf_build_set_property(COMPILE_DEFINITIONS "LV_INV_BUF_SIZE=128" APPEND)
+
 project(blt_esp_display)

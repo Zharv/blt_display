@@ -19,6 +19,9 @@ void snap_start(void);
  * "CHART m" sets the OnLine chart mode (0 discharge, 1 imbalance). */
 void snap_nav(int tab);
 void snap_chart(int mode);
+/* "BMS": scan and connect to the first JK found; "BMSOFF": disconnect. */
+void snap_bms_connect(void);
+void snap_bms_disconnect(void);
 
 #ifdef __cplusplus
 }

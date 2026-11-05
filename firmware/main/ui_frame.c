@@ -177,16 +177,26 @@ void ui_frame_update(const frame_status_t *st)
     char w[64], b[64];
     snprintf(w, sizeof w, "%s %s", LV_SYMBOL_WIFI, st->wifi_text ? st->wifi_text : "");
     snprintf(b, sizeof b, "%s %s", LV_SYMBOL_BLUETOOTH, st->bt_text ? st->bt_text : "");
+    /* colours only when an indicator changes: style setters are expensive */
+    static int last[4] = { -1, -1, -1, -1 };
+    bool c_state = last[0] != (int)st->state_ind, c_wifi = last[1] != (int)st->wifi;
+    bool c_bt = last[2] != (int)st->bt, c_prn = last[3] != (int)st->printer;
+    last[0] = st->state_ind; last[1] = st->wifi; last[2] = st->bt; last[3] = st->printer;
+    lv_obj_t *active = lv_screen_active();
     for (int i = 0; i < s_nfr; i++) {
         frame_t *f = &s_fr[i];
+        if (c_state) {
+            lv_obj_set_style_text_color(f->pill_lbl, ind_color(st->state_ind), 0);
+            lv_obj_set_style_bg_color(f->pill, ind_color(st->state_ind), 0);
+        }
+        if (c_wifi) lv_obj_set_style_text_color(f->wifi, ind_color(st->wifi), 0);
+        if (c_bt) lv_obj_set_style_text_color(f->bt, ind_color(st->bt), 0);
+        if (c_prn) lv_obj_set_style_text_color(f->prn, ind_color(st->printer), 0);
+        /* texts: the visible frame now, hidden ones are synced on screen load */
+        if (f->scr != active) continue;
         set_if_changed(f->pill_lbl, st->state_text ? st->state_text : "");
-        lv_obj_set_style_text_color(f->pill_lbl, ind_color(st->state_ind), 0);
-        lv_obj_set_style_bg_color(f->pill, ind_color(st->state_ind), 0);
         set_if_changed(f->wifi, w);
-        lv_obj_set_style_text_color(f->wifi, ind_color(st->wifi), 0);
         set_if_changed(f->bt, b);
-        lv_obj_set_style_text_color(f->bt, ind_color(st->bt), 0);
-        lv_obj_set_style_text_color(f->prn, ind_color(st->printer), 0);
         set_if_changed(f->clock, st->clock ? st->clock : "");
     }
 }

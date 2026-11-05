@@ -89,9 +89,12 @@ def main():
     ap.add_argument("--tab", type=int)
     ap.add_argument("--chart", type=int)
     ap.add_argument("--log", type=float)
+    ap.add_argument("--cmd", help="send this console command first (e.g. BMS, BMSOFF)")
     a = ap.parse_args()
 
     s = open_port(a.port)
+    if a.cmd:
+        s.write(b"\n" + a.cmd.encode() + b"\n")
     if a.log:
         end = time.time() + a.log
         while time.time() < end:

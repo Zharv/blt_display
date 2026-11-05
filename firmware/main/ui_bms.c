@@ -3,6 +3,7 @@
 #include "ui_style.h"
 #include "i18n.h"
 #include "bms_ble.h"
+#include "esp_log.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -47,6 +48,7 @@ static void dev_click_cb(lv_event_t *e)
 static void disc_click_cb(lv_event_t *e)
 {
     (void)e;
+    ESP_LOGI("ui_bms", "disconnect tapped");
     bms_ble_disconnect();
     lv_label_set_text(s_status, tr(S_BMS_FORGOT));
 }
