@@ -29,6 +29,21 @@ static lv_obj_t *s_status;
 static void (*s_print_cb)(void);
 static void (*s_settings_cb)(void);
 static void (*s_printer_cb)(void);
+static void (*s_bms_cb)(void);
+static lv_obj_t *s_bms_title;
+
+static void bms_btn_cb(lv_event_t *e)
+{
+    (void)e;
+    if (s_bms_cb) s_bms_cb();
+}
+
+void ui_online_set_bms_cb(void (*cb)(void)) { s_bms_cb = cb; }
+
+void ui_online_set_bms_title(const char *text)
+{
+    if (s_bms_title) lv_label_set_text(s_bms_title, text ? text : "BMS");
+}
 
 static void print_btn_cb(lv_event_t *e)
 {
@@ -150,6 +165,17 @@ lv_obj_t *ui_online_create(void)
     lv_label_set_text(prl, LV_SYMBOL_SAVE);
     lv_obj_center(prl);
 
+    /* BMS (Bluetooth) button */
+    lv_obj_t *bb = lv_button_create(scr);
+    lv_obj_set_size(bb, 52, 44);
+    lv_obj_align(bb, LV_ALIGN_TOP_RIGHT, -296, 8);
+    lv_obj_set_style_bg_color(bb, COL_CARD, 0);
+    lv_obj_set_style_radius(bb, 10, 0);
+    lv_obj_add_event_cb(bb, bms_btn_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *bbl = lv_label_create(bb);
+    lv_label_set_text(bbl, LV_SYMBOL_BLUETOOTH);
+    lv_obj_center(bbl);
+
     s_status = lv_label_create(scr);
     lv_label_set_text(s_status, "");
     lv_obj_set_style_text_color(s_status, COL_AMBER, 0);
@@ -166,7 +192,12 @@ lv_obj_t *ui_online_create(void)
     s_lbl_temp = make_stat(ct, "TEMP (\xC2\xB0""C)", 420, 150, &lv_font_montserrat_30);
 
     /* BMS card (right) */
-    lv_obj_t *cb = make_card(scr, 652, 56, 612, 300, "BMS");
+    lv_obj_t *cb = make_card(scr, 652, 56, 612, 300, NULL);
+    s_bms_title = lv_label_create(cb);
+    lv_label_set_text(s_bms_title, "BMS (simulated)");
+    lv_obj_set_style_text_color(s_bms_title, COL_SUB, 0);
+    lv_obj_set_style_text_font(s_bms_title, &lv_font_montserrat_20, 0);
+    lv_obj_align(s_bms_title, LV_ALIGN_TOP_LEFT, 0, 0);
     s_lbl_soc   = make_stat(cb, "SOC (%)", 0, 40, &lv_font_montserrat_48);
     lv_obj_set_style_text_color(s_lbl_soc, COL_BLUE, 0);
     s_lbl_packv = make_stat(cb, "PACK (V)", 220, 40, &lv_font_montserrat_48);

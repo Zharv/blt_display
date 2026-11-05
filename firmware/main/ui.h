@@ -51,6 +51,12 @@ void ui_online_set_settings_cb(void (*cb)(void));
 /* Register the Printer settings button handler. */
 void ui_online_set_printer_cb(void (*cb)(void));
 
+/* Register the BMS (Bluetooth) button handler. */
+void ui_online_set_bms_cb(void (*cb)(void));
+
+/* Title of the BMS card, e.g. "BMS - JK_B2A24S (live)" or "BMS (simulated)". */
+void ui_online_set_bms_title(const char *text);
+
 /* Show a short status line (e.g. print result). */
 void ui_online_set_status(const char *text);
 

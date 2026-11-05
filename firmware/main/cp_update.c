@@ -78,14 +78,15 @@ esp_err_t cp_update_if_needed(void)
         return ESP_OK;
     }
 
-    if (verr == ESP_OK && v.major1 >= CPFW_WANT_MAJOR) {
-        ESP_LOGI(TAG, "C6 already up to date");
+    /* The staged image is applied once, identified by its CRC. (A rebuilt CP of
+     * the same ESP-Hosted version, e.g. with BLE added, still needs flashing, so
+     * the version alone can't gate it.) */
+    if (applied_crc() == hdr.crc) {
+        ESP_LOGI(TAG, "C6 already runs the staged image (crc %08lx)", (unsigned long)hdr.crc);
         return ESP_OK;
     }
-    if (applied_crc() == hdr.crc) {
-        ESP_LOGW(TAG, "staged image (crc %08lx) was already applied - not retrying",
-                 (unsigned long)hdr.crc);
-        return ESP_OK;
+    if (verr == ESP_OK && v.major1 < CPFW_WANT_MAJOR) {
+        ESP_LOGW(TAG, "C6 firmware is older than the host - updating");
     }
 
     size_t chunk = EH_HOST_CP_OTA_CHUNK_MAX;

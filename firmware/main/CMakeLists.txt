@@ -4,6 +4,8 @@ idf_component_register(
         "ui_online.c"
         "ui_wifi.c"
         "ui_printer.c"
+        "ui_bms.c"
+        "bms_ble.c"
         "netw.c"
         "cp_update.c"
         "print_job.c"
@@ -12,6 +14,8 @@ idf_component_register(
         esp32_p4_function_ev_board
         report
         print_ipp
+        bms
+        bt
         esp_wifi_remote
         esp_hosted
         mdns

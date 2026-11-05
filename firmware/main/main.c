@@ -4,6 +4,8 @@
  * discharge (until the USB link to a real BLT tester is wired), connects Wi-Fi via
  * the on-board ESP32-C6, and prints the report over IPP on the PRINT button.
  */
+#include <stdio.h>
+
 #include "esp_log.h"
 #include "lvgl.h"
 #include "bsp/esp-bsp.h"
@@ -14,6 +16,8 @@
 #include "ui.h"
 #include "ui_wifi.h"
 #include "ui_printer.h"
+#include "ui_bms.h"
+#include "bms_ble.h"
 #include "netw.h"
 #include "print_job.h"
 #include "report.h"
@@ -94,18 +98,49 @@ static void sim_fill_sample(const sim_state_t *s, online_sample_t *o)
     o->cell_min_mv = lo; o->cell_max_mv = hi; o->imbalance_mv = (uint16_t)(hi - lo);
 }
 
+/* Tester side is still simulated; the BMS side uses the real BLE BMS when it
+ * has delivered a frame in the last 5 s. Returns true if BMS data is live. */
+static bool fill_sample(online_sample_t *o)
+{
+    sim_fill_sample(&s_sim, o);
+    bms_data_t b;
+    uint32_t age = 0;
+    if (!bms_ble_get(&b, &age) || age > 5000) return false;
+
+    o->bms_present = true;
+    o->soc_pct = b.soc_pct;
+    o->bms_pack_v = b.pack_mv / 1000.0f;
+    o->cell_count = b.cell_count > UI_MAX_CELLS ? UI_MAX_CELLS : b.cell_count;
+    for (int i = 0; i < o->cell_count; i++) o->cell_mv[i] = b.cell_mv[i];
+    o->cell_min_mv = b.cell_min_mv;
+    o->cell_max_mv = b.cell_max_mv;
+    o->imbalance_mv = b.imbalance_mv;
+    o->bms_temp_c = b.temp_count ? b.temp_dc[0] / 10.0f : 0.0f;
+    return true;
+}
+
 static void tick_cb(lv_timer_t *t)
 {
     (void)t;
     static int done_hold;
+    static int last_live = -1;
     if (s_sim.done) {
         if (++done_hold > 24) { done_hold = 0; sim_reset(&s_sim); }
     } else {
         sim_step(&s_sim, SIM_DT_S);
     }
     online_sample_t o = {0};
-    sim_fill_sample(&s_sim, &o);
+    bool live = fill_sample(&o);
     ui_online_update(&o);
+
+    if ((int)live != last_live) {
+        char name[32], title[64];
+        bms_ble_state(name, sizeof name);
+        if (live) snprintf(title, sizeof title, "BMS - %.30s (live)", name[0] ? name : "BLE");
+        else snprintf(title, sizeof title, "BMS (simulated)");
+        ui_online_set_bms_title(title);
+        last_live = live;
+    }
 }
 
 /* LVGL is driven by the esp_lvgl_port task; any lv_* call from another task
@@ -136,7 +171,7 @@ static void on_print(void)
     if (s_printing) return;
     ESP_LOGI(TAG, "PRINT tapped");
     online_sample_t o = {0};
-    sim_fill_sample(&s_sim, &o);
+    fill_sample(&o);
     for (int i = 0; i < o.cell_count && i < UI_MAX_CELLS; i++) s_rep_cells[i] = o.cell_mv[i];
 
     s_rep = (report_data_t){
@@ -160,15 +195,18 @@ static void on_print(void)
 static void netw_task(void *arg)
 {
     (void)arg;
-    netw_start();
+    netw_start();      /* C6 link, co-processor update, Wi-Fi */
+    bms_ble_start();   /* BLE host over the same C6 */
     vTaskDelete(NULL);
 }
 
 static lv_obj_t *s_scr_online;
 static lv_obj_t *s_scr_wifi;
 static lv_obj_t *s_scr_printer;
+static lv_obj_t *s_scr_bms;
 static void go_wifi(void)    { lv_screen_load(s_scr_wifi); }
 static void go_printer(void) { lv_screen_load(s_scr_printer); }
+static void go_bms(void)     { lv_screen_load(s_scr_bms); }
 static void go_online(void)  { lv_screen_load(s_scr_online); }
 
 void app_main(void)
@@ -188,11 +226,14 @@ void app_main(void)
     s_scr_online = ui_online_create();
     s_scr_wifi = ui_wifi_create();
     s_scr_printer = ui_printer_create();
+    s_scr_bms = ui_bms_create();
     ui_online_set_print_cb(on_print);
     ui_online_set_settings_cb(go_wifi);
     ui_online_set_printer_cb(go_printer);
+    ui_online_set_bms_cb(go_bms);
     ui_wifi_set_back_cb(go_online);
     ui_printer_set_back_cb(go_online);
+    ui_bms_set_back_cb(go_online);
     lv_screen_load(s_scr_online);
     online_sample_t o = {0};
     sim_fill_sample(&s_sim, &o);
