@@ -1,0 +1,30 @@
+menu "BLT display app"
+
+config BLT_WIFI_SSID
+    string "Wi-Fi SSID"
+    default ""
+    help
+        2.4 GHz network the ESP32-C6 connects to. Set locally (sdkconfig is
+        gitignored) or via sdkconfig.credentials; do not commit real values.
+
+config BLT_WIFI_PASS
+    string "Wi-Fi password"
+    default ""
+
+config BLT_PRINTER_HOST
+    string "Printer host or IP (empty = mDNS _ipp._tcp auto-discover)"
+    default ""
+
+config BLT_PRINTER_PORT
+    int "Printer IPP port"
+    default 631
+
+config BLT_PRINTER_RESOURCE
+    string "IPP resource path"
+    default "/ipp/print"
+
+config BLT_PRINT_DPI
+    int "Report print resolution (dpi tag)"
+    default 150
+
+endmenu

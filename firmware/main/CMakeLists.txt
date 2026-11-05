@@ -2,7 +2,18 @@ idf_component_register(
     SRCS
         "main.c"
         "ui_online.c"
+        "netw.c"
+        "print_job.c"
     INCLUDE_DIRS "."
     REQUIRES
         esp32_p4_function_ev_board
+        report
+        print_ipp
+        esp_wifi_remote
+        esp_hosted
+        mdns
+        esp_http_client
+        nvs_flash
+        esp_netif
+        esp_event
 )

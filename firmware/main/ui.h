@@ -41,6 +41,12 @@ void ui_online_create(void);
 /* Push a new sample: updates readouts, cell bars and advances the chart. */
 void ui_online_update(const online_sample_t *s);
 
+/* Register the Print-button handler (called from the LVGL context on tap). */
+void ui_online_set_print_cb(void (*cb)(void));
+
+/* Show a short status line (e.g. print result). */
+void ui_online_set_status(const char *text);
+
 #ifdef __cplusplus
 }
 #endif

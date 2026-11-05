@@ -28,7 +28,8 @@ static void draw_curve(raster_t *r, int gx, int gy, int gw, int gh,
     for (int i = 0; i < n; i++) {
         int x = gx + (int)((long)i * (gw - 1) / (n - 1));
         float t = (v[i] - vmin) / (vmax - vmin);
-        if (t < 0) t = 0; if (t > 1) t = 1;
+        if (t < 0) t = 0;
+        if (t > 1) t = 1;
         int y = gy + gh - 1 - (int)(t * (gh - 1));
         if (i > 0) raster_line(r, px, py, x, y, gray);
         px = x; py = y;
@@ -68,7 +69,7 @@ void report_render(const report_data_t *d, raster_t *r)
     int rbh = 14 * s;
     raster_rect(r, m, y, W - 2 * m, rbh, BLACK);
     int rb = y + 3 * s;
-    char buf[48];
+    char buf[128];
     snprintf(buf, sizeof buf, "RESULT:  %.2f Ah   %02u:%02u   Vmin %.2f V   Tmax %.1f C",
              d->discharged_ah, (unsigned)(d->duration_s / 60), (unsigned)(d->duration_s % 60),
              d->min_voltage_v, d->max_temp_c);

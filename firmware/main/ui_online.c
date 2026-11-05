@@ -25,6 +25,21 @@ static lv_chart_series_t *s_ser_v, *s_ser_i;
 static lv_obj_t *s_cell_bar[UI_MAX_CELLS];
 static lv_obj_t *s_cell_lbl[UI_MAX_CELLS];
 static int s_cell_shown;
+static lv_obj_t *s_status;
+static void (*s_print_cb)(void);
+
+static void print_btn_cb(lv_event_t *e)
+{
+    (void)e;
+    if (s_print_cb) s_print_cb();
+}
+
+void ui_online_set_print_cb(void (*cb)(void)) { s_print_cb = cb; }
+
+void ui_online_set_status(const char *text)
+{
+    if (s_status) lv_label_set_text(s_status, text ? text : "");
+}
 
 static lv_obj_t *make_card(lv_obj_t *parent, int x, int y, int w, int h, const char *title)
 {
@@ -82,7 +97,25 @@ void ui_online_create(void)
     lv_label_set_text(s_lbl_state, "--");
     lv_obj_set_style_text_color(s_lbl_state, COL_GREEN, 0);
     lv_obj_set_style_text_font(s_lbl_state, &lv_font_montserrat_22, 0);
-    lv_obj_align(s_lbl_state, LV_ALIGN_TOP_RIGHT, -20, 16);
+    lv_obj_align(s_lbl_state, LV_ALIGN_TOP_RIGHT, -200, 16);
+
+    /* Print button */
+    lv_obj_t *pb = lv_button_create(scr);
+    lv_obj_set_size(pb, 150, 44);
+    lv_obj_align(pb, LV_ALIGN_TOP_RIGHT, -20, 8);
+    lv_obj_set_style_bg_color(pb, COL_BLUE, 0);
+    lv_obj_set_style_radius(pb, 10, 0);
+    lv_obj_add_event_cb(pb, print_btn_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *pl = lv_label_create(pb);
+    lv_label_set_text(pl, "PRINT");
+    lv_obj_set_style_text_font(pl, &lv_font_montserrat_20, 0);
+    lv_obj_center(pl);
+
+    s_status = lv_label_create(scr);
+    lv_label_set_text(s_status, "");
+    lv_obj_set_style_text_color(s_status, COL_SUB, 0);
+    lv_obj_set_style_text_font(s_status, &lv_font_montserrat_16, 0);
+    lv_obj_align(s_status, LV_ALIGN_TOP_RIGHT, -180, 58);
 
     /* tester card (left) */
     lv_obj_t *ct = make_card(scr, 16, 56, 612, 300, "TESTER");
