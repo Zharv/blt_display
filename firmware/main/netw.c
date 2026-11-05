@@ -3,6 +3,11 @@
 #include <string.h>
 #include <stdlib.h>
 
+#include "lwip/sockets.h"
+#include "lwip/inet.h"
+#include "lwip/etharp.h"
+#include <errno.h>
+
 #include "esp_log.h"
 #include "esp_err.h"
 #include "nvs_flash.h"
@@ -14,6 +19,7 @@
 #include "mdns.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
+#include "freertos/task.h"
 
 static const char *TAG = "netw";
 
@@ -27,6 +33,82 @@ static volatile bool s_connected;
 static volatile bool s_have_creds;
 static char s_ssid[33];
 static esp_ip4_addr_t s_ip;
+static esp_ip4_addr_t s_gw;
+static bool s_diag_done;
+
+/* Non-blocking TCP connect with a timeout; logs reachability + error detail. */
+static bool conntest(const char *ip, uint16_t port, int timeout_ms)
+{
+    int s = socket(AF_INET, SOCK_STREAM, 0);
+    if (s < 0) { ESP_LOGW(TAG, "    socket() errno=%d", errno); return false; }
+    int fl = fcntl(s, F_GETFL, 0);
+    fcntl(s, F_SETFL, fl | O_NONBLOCK);
+    struct sockaddr_in a = {0};
+    a.sin_family = AF_INET;
+    a.sin_port = htons(port);
+    a.sin_addr.s_addr = inet_addr(ip);
+    bool ok = false;
+    int r = connect(s, (struct sockaddr *)&a, sizeof a);
+    int cerr = (r == 0) ? 0 : errno;
+    int sel = -2, soerr = -1;
+    if (r == 0) {
+        ok = true;
+    } else if (cerr == EINPROGRESS) {
+        fd_set ws; FD_ZERO(&ws); FD_SET(s, &ws);
+        struct timeval tv = { timeout_ms / 1000, (timeout_ms % 1000) * 1000 };
+        sel = select(s + 1, NULL, &ws, NULL, &tv);
+        if (sel > 0) {
+            socklen_t el = sizeof soerr;
+            getsockopt(s, SOL_SOCKET, SO_ERROR, &soerr, &el);
+            ok = (soerr == 0);
+        }
+    }
+    if (!ok) {
+        ESP_LOGW(TAG, "    %s:%u connect r=%d errno=%d(%s) select=%d so_error=%d(%s)",
+                 ip, (unsigned)port, r, cerr, strerror(cerr), sel,
+                 soerr, soerr > 0 ? strerror(soerr) : "-");
+    }
+    close(s);
+    return ok;
+}
+
+static void dump_arp(void)
+{
+    for (size_t i = 0; i < ARP_TABLE_SIZE; i++) {
+        ip4_addr_t *ip; struct netif *nif; struct eth_addr *eth;
+        if (etharp_get_entry(i, &ip, &nif, &eth)) {
+            ESP_LOGW(TAG, "    arp %-15s -> %02x:%02x:%02x:%02x:%02x:%02x", ip4addr_ntoa(ip),
+                     eth->addr[0], eth->addr[1], eth->addr[2],
+                     eth->addr[3], eth->addr[4], eth->addr[5]);
+        }
+    }
+}
+
+static void diag_task(void *arg)
+{
+    (void)arg;
+    char gw[16];
+    snprintf(gw, sizeof gw, IPSTR, IP2STR(&s_gw));
+    uint8_t mac[6] = {0};
+    esp_wifi_get_mac(WIFI_IF_STA, mac);
+    ESP_LOGW(TAG, "connectivity test (gw=%s, my mac=%02x:%02x:%02x:%02x:%02x:%02x):", gw,
+             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    ESP_LOGW(TAG, "  gateway   %s:80   -> %s", gw, conntest(gw, 80, 4000) ? "OK" : "FAIL");
+    ESP_LOGW(TAG, "  internet  8.8.8.8:53 -> %s", conntest("8.8.8.8", 53, 4000) ? "OK" : "FAIL");
+    netw_printer_t p;
+    if (netw_get_printer(&p) && p.ip[0]) {
+        ESP_LOGW(TAG, "  printer   %s:%u -> %s", p.ip, (unsigned)p.port,
+                 conntest(p.ip, p.port, 4000) ? "OK" : "FAIL");
+    } else {
+        ESP_LOGW(TAG, "  printer   192.168.0.101:631 -> %s",
+                 conntest("192.168.0.101", 631, 4000) ? "OK" : "FAIL");
+    }
+    ESP_LOGW(TAG, "  PC        192.168.0.108:445 -> %s",
+             conntest("192.168.0.108", 445, 4000) ? "OK" : "FAIL");
+    ESP_LOGW(TAG, "  arp table:");
+    dump_arp();
+    vTaskDelete(NULL);
+}
 
 static void save_creds(const char *ssid, const char *pass)
 {
@@ -73,10 +155,15 @@ static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data)
     } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *e = (ip_event_got_ip_t *)data;
         s_ip = e->ip_info.ip;
-        ESP_LOGI(TAG, "got ip: " IPSTR, IP2STR(&s_ip));
+        s_gw = e->ip_info.gw;
+        ESP_LOGI(TAG, "got ip: " IPSTR " gw: " IPSTR, IP2STR(&s_ip), IP2STR(&s_gw));
         s_retry = 0;
         s_connected = true;
         xEventGroupSetBits(s_events, BIT_CONNECTED);
+        if (!s_diag_done) {
+            s_diag_done = true;
+            xTaskCreate(diag_task, "netdiag", 4096, NULL, 4, NULL);
+        }
     }
 }
 
@@ -118,6 +205,12 @@ void netw_start(void)
     }
 
     ESP_ERROR_CHECK(esp_wifi_start());
+
+    /* Modem-sleep makes the STA miss broadcast/multicast frames (ARP requests,
+     * mDNS) - peers then can't reach us. This is a mains-powered bench device,
+     * so keep the radio awake. */
+    esp_err_t ps = esp_wifi_set_ps(WIFI_PS_NONE);
+    ESP_LOGI(TAG, "wifi power save off: %s", esp_err_to_name(ps));
 
     mdns_init();
     mdns_hostname_set("blt-display");

@@ -18,10 +18,20 @@
 static lv_obj_t *s_screen;
 static lv_obj_t *s_list;
 static lv_obj_t *s_status;
+static lv_obj_t *s_ip_ta;
+static lv_obj_t *s_kb;
 static void (*s_back_cb)(void);
 
 static netw_printer_t s_printers[16];
 static volatile int s_scan_n = -1;   /* -1 idle, -2 scanning, >=0 ready(count) */
+
+static void save_and_report(const netw_printer_t *p)
+{
+    netw_set_printer(p);
+    lv_label_set_text_fmt(s_status, LV_SYMBOL_OK " saved: %.60s  (%.15s:%u)",
+                          p->name[0] ? p->name : p->ip, p->ip, (unsigned)p->port);
+    lv_obj_set_style_text_color(s_status, COL_GREEN, 0);
+}
 
 static void scan_task(void *arg)
 {
@@ -35,10 +45,7 @@ static void printer_click_cb(lv_event_t *e)
 {
     int i = (int)(intptr_t)lv_event_get_user_data(e);
     if (i < 0 || i >= 16) return;
-    netw_set_printer(&s_printers[i]);
-    lv_label_set_text_fmt(s_status, LV_SYMBOL_OK " saved: %s  (%s:%u)",
-                          s_printers[i].name, s_printers[i].ip, (unsigned)s_printers[i].port);
-    lv_obj_set_style_text_color(s_status, COL_GREEN, 0);
+    save_and_report(&s_printers[i]);
 }
 
 static void scan_click_cb(lv_event_t *e)
@@ -49,6 +56,34 @@ static void scan_click_cb(lv_event_t *e)
     lv_label_set_text(s_status, "searching for printers...");
     lv_obj_set_style_text_color(s_status, COL_SUB, 0);
     xTaskCreate(scan_task, "ippscan", 4096, NULL, 4, NULL);
+}
+
+static void ip_focus_cb(lv_event_t *e)
+{
+    (void)e;
+    lv_obj_clear_flag(s_kb, LV_OBJ_FLAG_HIDDEN);
+    lv_keyboard_set_textarea(s_kb, s_ip_ta);
+}
+
+static void use_ip_cb(lv_event_t *e)
+{
+    (void)e;
+    const char *ip = lv_textarea_get_text(s_ip_ta);
+    if (!ip || !ip[0]) { lv_label_set_text(s_status, "enter an IP first"); return; }
+    netw_printer_t p = {0};
+    strlcpy(p.ip, ip, sizeof p.ip);
+    strlcpy(p.resource, "/ipp/print", sizeof p.resource);
+    strlcpy(p.name, "manual", sizeof p.name);
+    p.port = 631;
+    lv_obj_add_flag(s_kb, LV_OBJ_FLAG_HIDDEN);
+    save_and_report(&p);
+}
+
+static void kb_event_cb(lv_event_t *e)
+{
+    lv_event_code_t code = lv_event_get_code(e);
+    if (code == LV_EVENT_READY || code == LV_EVENT_CANCEL)
+        lv_obj_add_flag(s_kb, LV_OBJ_FLAG_HIDDEN);
 }
 
 static void back_click_cb(lv_event_t *e)
@@ -72,11 +107,10 @@ static void poll_cb(lv_timer_t *t)
         lv_obj_set_style_text_color(b, COL_TXT, 0);
         lv_obj_add_event_cb(b, printer_click_cb, LV_EVENT_CLICKED, (void *)(intptr_t)i);
     }
-    if (n == 0) {
-        lv_label_set_text(s_status, "no IPP printers found - check it's on the same network");
-    } else {
+    if (n == 0)
+        lv_label_set_text(s_status, "none found via mDNS - enter the IP on the right");
+    else
         lv_label_set_text_fmt(s_status, "found %d printer(s) - tap to select", n);
-    }
 }
 
 lv_obj_t *ui_printer_create(void)
@@ -111,21 +145,56 @@ lv_obj_t *ui_printer_create(void)
     lv_obj_center(sl);
 
     s_status = lv_label_create(s_screen);
-    lv_label_set_text(s_status, "tap SEARCH to find IPP/AirPrint printers");
+    lv_label_set_text(s_status, "SEARCH, or enter the printer IP on the right");
     lv_obj_set_style_text_color(s_status, COL_SUB, 0);
     lv_obj_set_style_text_font(s_status, &lv_font_montserrat_18, 0);
     lv_obj_align(s_status, LV_ALIGN_TOP_LEFT, 20, 58);
 
+    /* discovered list (left) */
     s_list = lv_list_create(s_screen);
-    lv_obj_set_size(s_list, LV_HOR_RES - 32, LV_VER_RES - 120);
-    lv_obj_align(s_list, LV_ALIGN_TOP_LEFT, 16, 100);
+    lv_obj_set_size(s_list, 600, 380);
+    lv_obj_align(s_list, LV_ALIGN_TOP_LEFT, 16, 96);
     lv_obj_set_style_bg_color(s_list, COL_CARD, 0);
     lv_obj_set_style_border_width(s_list, 0, 0);
 
-    /* preselect: show the saved printer if any */
+    /* manual IP entry (right) */
+    lv_obj_t *iplab = lv_label_create(s_screen);
+    lv_label_set_text(iplab, "Enter printer IP manually:");
+    lv_obj_set_style_text_color(iplab, COL_TXT, 0);
+    lv_obj_set_style_text_font(iplab, &lv_font_montserrat_20, 0);
+    lv_obj_align(iplab, LV_ALIGN_TOP_LEFT, 640, 100);
+
+    s_ip_ta = lv_textarea_create(s_screen);
+    lv_textarea_set_one_line(s_ip_ta, true);
+    lv_textarea_set_placeholder_text(s_ip_ta, "192.168.1.50");
+    lv_obj_set_size(s_ip_ta, 560, 56);
+    lv_obj_align(s_ip_ta, LV_ALIGN_TOP_LEFT, 640, 140);
+    lv_obj_add_event_cb(s_ip_ta, ip_focus_cb, LV_EVENT_FOCUSED, NULL);
+    lv_obj_add_event_cb(s_ip_ta, ip_focus_cb, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *use = lv_button_create(s_screen);
+    lv_obj_set_size(use, 200, 56);
+    lv_obj_align(use, LV_ALIGN_TOP_LEFT, 640, 210);
+    lv_obj_set_style_bg_color(use, COL_GREEN, 0);
+    lv_obj_add_event_cb(use, use_ip_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *ul = lv_label_create(use);
+    lv_label_set_text(ul, "USE THIS IP");
+    lv_obj_set_style_text_color(ul, lv_color_hex(0x07210f), 0);
+    lv_obj_set_style_text_font(ul, &lv_font_montserrat_20, 0);
+    lv_obj_center(ul);
+
+    /* number keyboard (bottom), hidden until the IP field is tapped */
+    s_kb = lv_keyboard_create(s_screen);
+    lv_keyboard_set_mode(s_kb, LV_KEYBOARD_MODE_NUMBER);
+    lv_obj_set_size(s_kb, LV_HOR_RES, 300);
+    lv_obj_align(s_kb, LV_ALIGN_BOTTOM_MID, 0, 0);
+    lv_obj_add_event_cb(s_kb, kb_event_cb, LV_EVENT_ALL, NULL);
+    lv_obj_add_flag(s_kb, LV_OBJ_FLAG_HIDDEN);
+
     netw_printer_t saved;
     if (netw_get_printer(&saved)) {
-        lv_label_set_text_fmt(s_status, "current: %s (%s) - SEARCH to change",
+        lv_textarea_set_text(s_ip_ta, saved.ip);
+        lv_label_set_text_fmt(s_status, "current: %.60s (%.15s)",
                               saved.name[0] ? saved.name : saved.ip, saved.ip);
     }
 
