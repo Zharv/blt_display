@@ -107,13 +107,13 @@ static void diag_task(void *arg)
     }
     ESP_LOGW(TAG, "  gateway   %s:80   -> %s", gw, conntest(gw, 80, 4000) ? "OK" : "FAIL");
     ESP_LOGW(TAG, "  internet  8.8.8.8:53 -> %s", conntest("8.8.8.8", 53, 4000) ? "OK" : "FAIL");
-    netw_printer_t p;
-    if (netw_get_printer(&p) && p.ip[0]) {
-        ESP_LOGW(TAG, "  printer   %s:%u -> %s", p.ip, (unsigned)p.port,
-                 conntest(p.ip, p.port, 4000) ? "OK" : "FAIL");
+    char ph[64], pres[64];
+    uint16_t pport = 631;
+    if (netw_resolve_printer(ph, sizeof ph, &pport, pres, sizeof pres)) {
+        ESP_LOGW(TAG, "  printer   %s:%u -> %s", ph, (unsigned)pport,
+                 conntest(ph, pport, 4000) ? "OK" : "FAIL");
     } else {
-        ESP_LOGW(TAG, "  printer   192.168.0.101:631 -> %s",
-                 conntest("192.168.0.101", 631, 4000) ? "OK" : "FAIL");
+        ESP_LOGW(TAG, "  printer   (none configured)");
     }
     ESP_LOGW(TAG, "  PC        192.168.0.108:445 -> %s",
              conntest("192.168.0.108", 445, 4000) ? "OK" : "FAIL");
@@ -347,6 +347,16 @@ bool netw_get_printer(netw_printer_t *p)
 bool netw_resolve_printer(char *host, size_t host_len, uint16_t *port,
                           char *resource, size_t res_len)
 {
+    /* On a printer's own Wi-Fi Direct network ("DIRECT-xx-..."), the printer is
+     * the access point, i.e. our gateway. */
+    if (s_connected && strncmp(s_ssid, "DIRECT-", 7) == 0) {
+        snprintf(host, host_len, IPSTR, IP2STR(&s_gw));
+        strlcpy(resource, "/ipp/print", res_len);
+        *port = 631;
+        ESP_LOGI(TAG, "Wi-Fi Direct: printer = gateway %s", host);
+        return true;
+    }
+
     /* saved selection wins */
     netw_printer_t saved;
     if (netw_get_printer(&saved)) {
