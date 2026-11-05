@@ -2,6 +2,7 @@ idf_component_register(
     SRCS
         "main.c"
         "ui_online.c"
+        "ui_wifi.c"
         "netw.c"
         "print_job.c"
     INCLUDE_DIRS "."

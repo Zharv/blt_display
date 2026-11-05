@@ -12,6 +12,7 @@
 #include "freertos/task.h"
 
 #include "ui.h"
+#include "ui_wifi.h"
 #include "netw.h"
 #include "print_job.h"
 #include "report.h"
@@ -151,6 +152,11 @@ static void netw_task(void *arg)
     vTaskDelete(NULL);
 }
 
+static lv_obj_t *s_scr_online;
+static lv_obj_t *s_scr_wifi;
+static void go_wifi(void)   { lv_screen_load(s_scr_wifi); }
+static void go_online(void) { lv_screen_load(s_scr_online); }
+
 void app_main(void)
 {
     bsp_display_cfg_t cfg = {
@@ -165,8 +171,12 @@ void app_main(void)
     sim_reset(&s_sim);
 
     bsp_display_lock(0);
-    ui_online_create();
+    s_scr_online = ui_online_create();
+    s_scr_wifi = ui_wifi_create();
     ui_online_set_print_cb(on_print);
+    ui_online_set_settings_cb(go_wifi);
+    ui_wifi_set_back_cb(go_online);
+    lv_screen_load(s_scr_online);
     online_sample_t o = {0};
     sim_fill_sample(&s_sim, &o);
     ui_online_update(&o);

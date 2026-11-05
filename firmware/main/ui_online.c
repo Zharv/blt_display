@@ -27,6 +27,7 @@ static lv_obj_t *s_cell_lbl[UI_MAX_CELLS];
 static int s_cell_shown;
 static lv_obj_t *s_status;
 static void (*s_print_cb)(void);
+static void (*s_settings_cb)(void);
 
 static void print_btn_cb(lv_event_t *e)
 {
@@ -34,7 +35,14 @@ static void print_btn_cb(lv_event_t *e)
     if (s_print_cb) s_print_cb();
 }
 
+static void settings_btn_cb(lv_event_t *e)
+{
+    (void)e;
+    if (s_settings_cb) s_settings_cb();
+}
+
 void ui_online_set_print_cb(void (*cb)(void)) { s_print_cb = cb; }
+void ui_online_set_settings_cb(void (*cb)(void)) { s_settings_cb = cb; }
 
 void ui_online_set_status(const char *text)
 {
@@ -79,9 +87,10 @@ static lv_obj_t *make_stat(lv_obj_t *card, const char *cap, int x, int y, const 
     return v;
 }
 
-void ui_online_create(void)
+lv_obj_t *ui_online_create(void)
 {
-    lv_obj_t *scr = lv_screen_active();
+    lv_obj_t *scr = lv_obj_create(NULL);
+    lv_obj_clear_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_style_bg_color(scr, COL_BG, 0);
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
     lv_obj_clear_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
@@ -110,6 +119,17 @@ void ui_online_create(void)
     lv_label_set_text(pl, "PRINT");
     lv_obj_set_style_text_font(pl, &lv_font_montserrat_20, 0);
     lv_obj_center(pl);
+
+    /* Settings (Wi-Fi) button */
+    lv_obj_t *sb = lv_button_create(scr);
+    lv_obj_set_size(sb, 56, 44);
+    lv_obj_align(sb, LV_ALIGN_TOP_RIGHT, -180, 8);
+    lv_obj_set_style_bg_color(sb, COL_CARD, 0);
+    lv_obj_set_style_radius(sb, 10, 0);
+    lv_obj_add_event_cb(sb, settings_btn_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *sl2 = lv_label_create(sb);
+    lv_label_set_text(sl2, LV_SYMBOL_SETTINGS);
+    lv_obj_center(sl2);
 
     s_status = lv_label_create(scr);
     lv_label_set_text(s_status, "");
@@ -174,6 +194,8 @@ void ui_online_create(void)
     lv_chart_set_range(s_chart, LV_CHART_AXIS_SECONDARY_Y, 0, I_MAX_MA);
     s_ser_v = lv_chart_add_series(s_chart, COL_GREEN, LV_CHART_AXIS_PRIMARY_Y);
     s_ser_i = lv_chart_add_series(s_chart, COL_BLUE, LV_CHART_AXIS_SECONDARY_Y);
+
+    return scr;
 }
 
 static void update_cells(const online_sample_t *s)

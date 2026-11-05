@@ -11,11 +11,30 @@
 extern "C" {
 #endif
 
-/* Bring up NVS, ESP-Hosted, Wi-Fi STA and start connecting (non-blocking). */
+/* Bring up NVS, ESP-Hosted, Wi-Fi STA. Connects if credentials are saved in NVS
+ * (or set via CONFIG_BLT_WIFI_SSID); otherwise idles until netw_connect(). */
 void netw_start(void);
 
 bool netw_is_connected(void);
 bool netw_wait_connected(uint32_t timeout_ms);
+
+typedef struct {
+    char    ssid[33];
+    int8_t  rssi;
+    bool    secure;
+} netw_ap_t;
+
+/* Scan for access points (blocking ~2 s). Returns the count written to out. */
+int  netw_scan(netw_ap_t *out, int max);
+
+/* Save credentials to NVS and (re)connect. */
+void netw_connect(const char *ssid, const char *pass);
+
+/* Current IP as a string, or "" when not connected. */
+void netw_get_ip_str(char *buf, size_t n);
+
+/* SSID currently targeted (from NVS/last connect), "" if none. */
+void netw_get_ssid(char *buf, size_t n);
 
 /*
  * Resolve the printer. If CONFIG_BLT_PRINTER_HOST is set it is used directly;

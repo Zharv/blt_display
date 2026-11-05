@@ -1,10 +1,12 @@
 #include "netw.h"
 
 #include <string.h>
+#include <stdlib.h>
 
 #include "esp_log.h"
 #include "esp_err.h"
 #include "nvs_flash.h"
+#include "nvs.h"
 #include "esp_netif.h"
 #include "esp_event.h"
 #include "esp_hosted.h"
@@ -15,30 +17,63 @@
 
 static const char *TAG = "netw";
 
-#define WIFI_RETRY_MAX 10
+#define WIFI_RETRY_MAX 8
 #define BIT_CONNECTED  BIT0
+#define NVS_NS         "wifi"
 
 static EventGroupHandle_t s_events;
 static int s_retry;
 static volatile bool s_connected;
+static volatile bool s_have_creds;
+static char s_ssid[33];
+static esp_ip4_addr_t s_ip;
+
+static void save_creds(const char *ssid, const char *pass)
+{
+    nvs_handle_t h;
+    if (nvs_open(NVS_NS, NVS_READWRITE, &h) != ESP_OK) return;
+    nvs_set_str(h, "ssid", ssid);
+    nvs_set_str(h, "pass", pass);
+    nvs_commit(h);
+    nvs_close(h);
+}
+
+static bool load_creds(char *ssid, size_t sl, char *pass, size_t pl)
+{
+    nvs_handle_t h;
+    if (nvs_open(NVS_NS, NVS_READONLY, &h) != ESP_OK) return false;
+    bool ok = (nvs_get_str(h, "ssid", ssid, &sl) == ESP_OK) &&
+              (nvs_get_str(h, "pass", pass, &pl) == ESP_OK) && ssid[0];
+    nvs_close(h);
+    return ok;
+}
+
+static void apply_config(const char *ssid, const char *pass)
+{
+    wifi_config_t wc = {0};
+    strlcpy((char *)wc.sta.ssid, ssid, sizeof wc.sta.ssid);
+    strlcpy((char *)wc.sta.password, pass, sizeof wc.sta.password);
+    strlcpy(s_ssid, ssid, sizeof s_ssid);
+    esp_wifi_set_config(WIFI_IF_STA, &wc);
+    s_have_creds = (ssid[0] != '\0');
+}
 
 static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
     if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START) {
-        esp_wifi_connect();
+        if (s_have_creds) esp_wifi_connect();
     } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
         s_connected = false;
         xEventGroupClearBits(s_events, BIT_CONNECTED);
-        if (s_retry < WIFI_RETRY_MAX) {
+        if (s_have_creds && s_retry < WIFI_RETRY_MAX) {
             esp_wifi_connect();
             s_retry++;
             ESP_LOGI(TAG, "retry connect (%d)", s_retry);
-        } else {
-            ESP_LOGW(TAG, "connect failed");
         }
     } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *e = (ip_event_got_ip_t *)data;
-        ESP_LOGI(TAG, "got ip: " IPSTR, IP2STR(&e->ip_info.ip));
+        s_ip = e->ip_info.ip;
+        ESP_LOGI(TAG, "got ip: " IPSTR, IP2STR(&s_ip));
         s_retry = 0;
         s_connected = true;
         xEventGroupSetBits(s_events, BIT_CONNECTED);
@@ -56,7 +91,6 @@ void netw_start(void)
     }
     ESP_ERROR_CHECK(ret);
 
-    /* bring up the C6 co-processor */
     esp_hosted_init();
     esp_hosted_connect_to_slave();
 
@@ -70,20 +104,20 @@ void netw_start(void)
 
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
-
-    wifi_config_t wc = {0};
-    strlcpy((char *)wc.sta.ssid, CONFIG_BLT_WIFI_SSID, sizeof wc.sta.ssid);
-    strlcpy((char *)wc.sta.password, CONFIG_BLT_WIFI_PASS, sizeof wc.sta.password);
-
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wc));
-    ESP_ERROR_CHECK(esp_wifi_start());
 
-    if (strlen(CONFIG_BLT_WIFI_SSID) == 0) {
-        ESP_LOGW(TAG, "CONFIG_BLT_WIFI_SSID is empty - set it in sdkconfig.credentials");
+    /* saved creds (NVS) win; else the build-time CONFIG default; else idle */
+    char ssid[33] = {0}, pass[65] = {0};
+    if (load_creds(ssid, sizeof ssid, pass, sizeof pass)) {
+        ESP_LOGI(TAG, "using saved Wi-Fi \"%s\"", ssid);
+        apply_config(ssid, pass);
+    } else if (strlen(CONFIG_BLT_WIFI_SSID) > 0) {
+        apply_config(CONFIG_BLT_WIFI_SSID, CONFIG_BLT_WIFI_PASS);
     } else {
-        ESP_LOGI(TAG, "connecting to \"%s\" via ESP32-C6", CONFIG_BLT_WIFI_SSID);
+        ESP_LOGW(TAG, "no Wi-Fi saved - set it on the Settings screen");
     }
+
+    ESP_ERROR_CHECK(esp_wifi_start());
 
     mdns_init();
     mdns_hostname_set("blt-display");
@@ -99,6 +133,52 @@ bool netw_wait_connected(uint32_t timeout_ms)
     return (b & BIT_CONNECTED) != 0;
 }
 
+int netw_scan(netw_ap_t *out, int max)
+{
+    wifi_scan_config_t sc = { .show_hidden = false };
+    if (esp_wifi_scan_start(&sc, true) != ESP_OK) return 0;
+    uint16_t num = 0;
+    esp_wifi_scan_get_ap_num(&num);
+    if (num == 0) return 0;
+    wifi_ap_record_t *recs = calloc(num, sizeof(wifi_ap_record_t));
+    if (!recs) return 0;
+    esp_wifi_scan_get_ap_records(&num, recs);
+
+    int n = 0;
+    for (int i = 0; i < num && n < max; i++) {
+        /* skip duplicate SSIDs (keep the strongest, which comes first) */
+        bool dup = false;
+        for (int j = 0; j < n; j++)
+            if (strcmp(out[j].ssid, (char *)recs[i].ssid) == 0) { dup = true; break; }
+        if (dup || recs[i].ssid[0] == '\0') continue;
+        strlcpy(out[n].ssid, (char *)recs[i].ssid, sizeof out[n].ssid);
+        out[n].rssi = recs[i].rssi;
+        out[n].secure = (recs[i].authmode != WIFI_AUTH_OPEN);
+        n++;
+    }
+    free(recs);
+    return n;
+}
+
+void netw_connect(const char *ssid, const char *pass)
+{
+    if (!ssid || !ssid[0]) return;
+    save_creds(ssid, pass ? pass : "");
+    s_retry = 0;
+    apply_config(ssid, pass ? pass : "");
+    esp_wifi_disconnect();
+    esp_wifi_connect();
+    ESP_LOGI(TAG, "connecting to \"%s\"", ssid);
+}
+
+void netw_get_ip_str(char *buf, size_t n)
+{
+    if (s_connected) snprintf(buf, n, IPSTR, IP2STR(&s_ip));
+    else if (n) buf[0] = '\0';
+}
+
+void netw_get_ssid(char *buf, size_t n) { strlcpy(buf, s_ssid, n); }
+
 bool netw_resolve_printer(char *host, size_t host_len, uint16_t *port,
                           char *resource, size_t res_len)
 {
@@ -110,7 +190,6 @@ bool netw_resolve_printer(char *host, size_t host_len, uint16_t *port,
         return true;
     }
 
-    /* mDNS: first _ipp._tcp responder */
     mdns_result_t *results = NULL;
     esp_err_t err = mdns_query_ptr("_ipp", "_tcp", 3000, 20, &results);
     if (err != ESP_OK || results == NULL) {
