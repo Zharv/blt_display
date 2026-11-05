@@ -10,6 +10,7 @@
 #include <errno.h>
 
 #include "esp_log.h"
+#include "esp_heap_caps.h"
 #include "esp_err.h"
 #include "nvs_flash.h"
 #include "nvs.h"
@@ -179,9 +180,14 @@ static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data)
     }
 }
 
-void netw_start(void)
+bool netw_start(void)
 {
     s_events = xEventGroupCreate();
+    ESP_LOGI(TAG, "heap before hosted: internal %u (largest %u), dma %u, psram %u",
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
 
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
@@ -205,7 +211,13 @@ void netw_start(void)
     ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &on_event, NULL));
 
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+    esp_err_t werr = esp_wifi_init(&cfg);
+    if (werr != ESP_OK) {
+        /* C6 not answering: keep the UI running without Wi-Fi instead of
+         * rebooting in a loop */
+        ESP_LOGE(TAG, "esp_wifi_init failed (%s) - Wi-Fi unavailable", esp_err_to_name(werr));
+        return false;
+    }
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     /* Keep the C6 on 802.11b/g/n: the bench AP is 11n-only anyway, and this
      * keeps association identical to the other clients when debugging. */
@@ -234,6 +246,7 @@ void netw_start(void)
 
     mdns_init();
     mdns_hostname_set("blt-display");
+    return true;
 }
 
 bool netw_is_connected(void) { return s_connected; }

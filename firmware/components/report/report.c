@@ -36,6 +36,14 @@ static void draw_curve(raster_t *r, int gx, int gy, int gw, int gh,
     }
 }
 
+float report_nice_ceil(float v)
+{
+    static const float steps[] = { 5, 10, 20, 30, 50, 100, 200, 300, 500, 1000 };
+    for (unsigned i = 0; i < sizeof steps / sizeof steps[0]; i++)
+        if (v <= steps[i]) return steps[i];
+    return v;
+}
+
 void report_render(const report_data_t *d, raster_t *r)
 {
     int W = r->w, H = r->h;
@@ -70,9 +78,9 @@ void report_render(const report_data_t *d, raster_t *r)
     raster_rect(r, m, y, W - 2 * m, rbh, BLACK);
     int rb = y + 3 * s;
     char buf[128];
-    snprintf(buf, sizeof buf, "RESULT:  %.2f Ah   %02u:%02u   Vmin %.2f V   Tmax %.1f C",
-             d->discharged_ah, (unsigned)(d->duration_s / 60), (unsigned)(d->duration_s % 60),
-             d->min_voltage_v, d->max_temp_c);
+    snprintf(buf, sizeof buf, "RESULT:  %.2f Ah   %u:%02u:%02u   Vmin %.2f V   Tmax %.1f C",
+             d->discharged_ah, (unsigned)(d->duration_s / 3600), (unsigned)(d->duration_s / 60 % 60),
+             (unsigned)(d->duration_s % 60), d->min_voltage_v, d->max_temp_c);
     raster_text(r, m + 6 * s, rb, buf, s, BLACK);
     y += rbh + lh;
 
@@ -91,11 +99,34 @@ void report_render(const report_data_t *d, raster_t *r)
     raster_text(r, gx + 4 * s, gy + 2 * s, "V (black)  I (gray)", s, GRAY);
     y = gy + gh + lh;
 
+    /* ---- cell imbalance graph (max - min over the test) ---- */
+    if (d->curve_delta_mv && d->curve_n >= 2) {
+        float dmax = 0, dend = d->curve_delta_mv[d->curve_n - 1];
+        for (int i = 0; i < d->curve_n; i++)
+            if (d->curve_delta_mv[i] > dmax) dmax = d->curve_delta_mv[i];
+        float top = report_nice_ceil(dmax);
+        snprintf(buf, sizeof buf, "CELL IMBALANCE  max-min, mV   (end %.0f, peak %.0f)", dend, dmax);
+        raster_text(r, m, y, buf, s, GRAY);
+        y += lh;
+        int ih = gh / 2;
+        raster_rect(r, gx, y, gw, ih, BLACK);
+        for (int i = 1; i < 4; i++) raster_hline(r, gx + 1, gx + gw - 2, y + ih * i / 4, LGRAY);
+        draw_curve(r, gx, y, gw, ih, d->curve_delta_mv, d->curve_n, 0.0f, top, BLACK);
+        snprintf(buf, sizeof buf, "%.0f", top); raster_text(r, m, y - 2, buf, s, GRAY);
+        raster_text(r, m, y + ih - 8 * s, "0", s, GRAY);
+        y += ih + lh;
+    }
+
     /* ---- BMS section ---- */
     if (d->bms_present && d->cell_mv && d->cell_count > 0) {
         raster_text(r, m, y, "BMS", s, GRAY);
-        snprintf(buf, sizeof buf, "SOC %u%%   imbalance %u mV   min %u  max %u",
-                 d->soc_pct, d->imbalance_mv, d->cell_min_mv, d->cell_max_mv);
+        int imin = 0, imax = 0;
+        for (int i = 1; i < d->cell_count; i++) {
+            if (d->cell_mv[i] < d->cell_mv[imin]) imin = i;
+            if (d->cell_mv[i] > d->cell_mv[imax]) imax = i;
+        }
+        snprintf(buf, sizeof buf, "SOC %u%%   dU %u mV   min #%d %u   max #%d %u",
+                 d->soc_pct, d->imbalance_mv, imin + 1, d->cell_mv[imin], imax + 1, d->cell_mv[imax]);
         raster_text(r, m + 6 * 8 * s, y, buf, s, BLACK);
         y += lh;
         int n = d->cell_count;

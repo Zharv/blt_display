@@ -17,12 +17,20 @@ static int g_fail = 0, g_pass = 0;
 
 int main(int argc, char **argv)
 {
-    static float cv[NPT], ci[NPT];
+    static float cv[NPT], ci[NPT], cd[NPT];
     for (int i = 0; i < NPT; i++) {
         float ah = i * 0.13f;
         cv[i] = 53.3f - ah * 0.22f;            /* sagging voltage */
         ci[i] = (i < NPT - 3) ? 12.0f : 0.0f;  /* flat discharge then stop */
+        cd[i] = 4.0f + i * i * 0.006f;         /* imbalance grows near the end */
     }
+
+    /* graph top rounding */
+    CHECK(report_nice_ceil(0) == 5, "nice 0");
+    CHECK(report_nice_ceil(5) == 5, "nice 5");
+    CHECK(report_nice_ceil(5.1f) == 10, "nice 5.1");
+    CHECK(report_nice_ceil(52) == 100, "nice 52");
+    CHECK(report_nice_ceil(1500) == 1500, "nice 1500");
     uint16_t cells[14];
     uint16_t lo = 0xFFFF, hi = 0;
     for (int c = 0; c < 14; c++) {
@@ -41,6 +49,7 @@ int main(int argc, char **argv)
         .min_voltage_v = 42.0f, .max_temp_c = 31.5f, .cutoff_v = 42.0f,
         .curve_v = cv, .curve_i = ci, .curve_n = NPT,
         .curve_vmin = 40.0f, .curve_vmax = 55.0f, .curve_imax = 20.0f,
+        .curve_delta_mv = cd,
         .bms_present = true, .cell_mv = cells, .cell_count = 14,
         .cell_min_mv = lo, .cell_max_mv = hi, .imbalance_mv = (uint16_t)(hi - lo),
         .soc_pct = 8,
@@ -57,6 +66,24 @@ int main(int argc, char **argv)
     long dark = 0;
     for (long i = 0; i < (long)W * H; i++) if (buf[i] < 128) dark++;
     CHECK(dark > 2000, "too few dark pixels: %ld", dark);
+
+    /* the imbalance graph adds ink; without the curve it is skipped */
+    {
+        uint8_t *b2 = (uint8_t *)malloc((size_t)W * H);
+        raster_t r2; raster_init(&r2, b2, W, H);
+        raster_clear(&r2, 255);
+        report_data_t d2 = d;
+        d2.curve_delta_mv = NULL;
+        report_render(&d2, &r2);
+        long dark2 = 0;
+        for (long i = 0; i < (long)W * H; i++) if (b2[i] < 128) dark2++;
+        CHECK(dark > dark2 + 500, "imbalance graph ink: %ld vs %ld", dark, dark2);
+        /* footer stays inside the page */
+        long tail = 0;
+        for (long i = (long)W * (H - 4); i < (long)W * H; i++) if (b2[i] < 128) tail++;
+        CHECK(tail == 0, "ink in the last rows: %ld", tail);
+        free(b2);
+    }
 
     /* URF encodes and round-trips in size */
     size_t need = urf_encode(&r, 300, NULL, 0);

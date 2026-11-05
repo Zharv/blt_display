@@ -35,6 +35,8 @@ typedef struct {
     int    curve_n;
     float  curve_vmin, curve_vmax;
     float  curve_imax;
+    /* cell imbalance (max-min, mV) per curve sample; NULL = no imbalance graph */
+    const float *curve_delta_mv;
 
     /* BMS snapshot at end of test (optional) */
     bool            bms_present;
@@ -43,6 +45,9 @@ typedef struct {
     uint16_t        cell_min_mv, cell_max_mv, imbalance_mv;
     uint8_t         soc_pct;
 } report_data_t;
+
+/* Smallest of 5, 10, 20, 30, 50, 100, ... mV that is >= v (graph top). */
+float report_nice_ceil(float v);
 
 /* Render into r (any size). Caller clears r to white first (raster_clear 255). */
 void report_render(const report_data_t *d, raster_t *r);

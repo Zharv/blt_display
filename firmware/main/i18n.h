@@ -1,0 +1,52 @@
+/* UI strings in Ukrainian and English. tr(S_x) returns the active language. */
+#pragma once
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+typedef enum { LANG_UA = 0, LANG_EN = 1 } lang_t;
+
+typedef enum {
+    /* tabs + frame */
+    S_TAB_ONLINE, S_TAB_ARCHIVE, S_TAB_BMS, S_TAB_PRINTER, S_TAB_SETTINGS, S_PRINT_REPORT,
+    /* test state */
+    S_ST_DISCHARGE, S_ST_DONE, S_ST_REST, S_ST_IDLE,
+    /* tester card */
+    S_TESTER, S_SIMULATED, S_LIVE, S_CAPACITY, S_ENERGY, S_TIME, S_TEMP,
+    /* units */
+    S_U_V, S_U_A, S_U_AH, S_U_WH, S_U_MV, S_U_MIN,
+    /* bms card */
+    S_BMS_NO_LINK, S_CELL_DELTA, S_CELLS, S_BALANCING,
+    /* chart */
+    S_CH_DISCHARGE, S_CH_IMBALANCE, S_CH_U_TESTER, S_CH_U_BMS, S_CH_I, S_CH_DELTA, S_CH_UP, S_CH_DOWN, S_CH_OTHERS,
+    /* print status */
+    S_PR_PRINTING, S_PR_OK, S_PR_NOT_FOUND, S_PR_NO_WIFI, S_PR_FAILED,
+    /* archive */
+    S_ARCHIVE_EMPTY,
+    /* settings / wifi */
+    S_SET_WIFI, S_SET_LANGUAGE, S_SET_LANG_NOTE, S_SCAN, S_CONNECT, S_PASSWORD, S_NETWORK, S_NETWORK_NONE,
+    S_WIFI_HINT, S_WIFI_SCANNING, S_WIFI_FOUND, S_WIFI_PICK_FIRST, S_WIFI_CONNECTING,
+    /* printer */
+    S_PRN_SEARCH, S_PRN_HINT, S_PRN_SEARCHING, S_PRN_NONE, S_PRN_FOUND, S_PRN_SAVED, S_PRN_CURRENT,
+    S_PRN_MANUAL, S_PRN_USE_IP, S_PRN_ENTER_IP, S_PRN_DIRECT,
+    /* bms screen */
+    S_BMS_TITLE, S_BMS_HINT, S_BMS_SCANNING, S_BMS_FOUND, S_BMS_NOTHING, S_BMS_CONNECTING, S_BMS_NOT_READY,
+    S_BMS_FORGOT, S_DISCONNECT,
+    S_BLE_OFF, S_BLE_IDLE, S_BLE_SCANNING, S_BLE_CONNECTING, S_BLE_CONNECTED, S_BLE_STREAMING, S_BLE_ERROR,
+    S__COUNT
+} str_id_t;
+
+/* Load the saved language (NVS must be initialised). */
+void i18n_init(void);
+
+lang_t i18n_lang(void);
+
+/* Save the language; takes effect after restart. */
+void i18n_save(lang_t lang);
+
+const char *tr(str_id_t id);
+
+#ifdef __cplusplus
+}
+#endif

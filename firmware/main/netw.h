@@ -12,8 +12,9 @@ extern "C" {
 #endif
 
 /* Bring up NVS, ESP-Hosted, Wi-Fi STA. Connects if credentials are saved in NVS
- * (or set via CONFIG_BLT_WIFI_SSID); otherwise idles until netw_connect(). */
-void netw_start(void);
+ * (or set via CONFIG_BLT_WIFI_SSID); otherwise idles until netw_connect().
+ * Returns false if the C6 did not come up (no Wi-Fi/BLE this boot). */
+bool netw_start(void);
 
 bool netw_is_connected(void);
 bool netw_wait_connected(uint32_t timeout_ms);

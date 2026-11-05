@@ -57,6 +57,7 @@ static SemaphoreHandle_t s_scan_done;
 
 static esp_timer_handle_t s_reconnect_t;
 static esp_timer_handle_t s_kick_t;
+static int64_t s_link_us;       /* when notifications were enabled */
 
 static int gap_event(struct ble_gap_event *ev, void *arg);
 
@@ -189,8 +190,18 @@ static void kick_cb(void *arg)
 {
     (void)arg;
     if (s_conn == BLE_HS_CONN_HANDLE_NONE) return;
-    /* JK streams cell info after 0x96; re-request if it went quiet */
-    if (esp_timer_get_time() - s_data_us > 4000000) send_cmd(JK_CMD_CELLINFO);
+    /* JK streams cell info after 0x96; re-request if it went quiet. Some units
+     * stop notifying on a live link and ignore re-requests (seen after ~2 min):
+     * after 15 s of silence drop the link - the disconnect handler reconnects. */
+    int64_t last = s_data_us > s_link_us ? s_data_us : s_link_us;
+    int64_t quiet = esp_timer_get_time() - last;
+    if (quiet > 15000000) {
+        ESP_LOGW(TAG, "no data for %d s - reconnecting", (int)(quiet / 1000000));
+        esp_timer_stop(s_kick_t);
+        ble_gap_terminate(s_conn, BLE_ERR_REM_USER_CONN_TERM);
+    } else if (quiet > 4000000) {
+        send_cmd(JK_CMD_CELLINFO);
+    }
 }
 
 static int cccd_written(uint16_t conn, const struct ble_gatt_error *err,
@@ -203,6 +214,7 @@ static int cccd_written(uint16_t conn, const struct ble_gatt_error *err,
     }
     ESP_LOGI(TAG, "notifications on - requesting device + cell info");
     s_state = BMS_BLE_CONNECTED;
+    s_link_us = esp_timer_get_time();
     send_cmd(JK_CMD_DEVINFO);
     esp_timer_stop(s_kick_t);
     esp_timer_start_periodic(s_kick_t, 1500 * 1000);

@@ -1,7 +1,6 @@
 /*
- * OnLine screen: live test view (tester + BMS) with a discharge graph.
- * Fed by a sample struct so the data source (synthetic now, real tester/BMS
- * later) stays separate from the UI.
+ * OnLine screen: live test view (tester + BMS) with a discharge / imbalance
+ * chart drawn from the measurement history (hist.h).
  */
 #pragma once
 
@@ -13,52 +12,51 @@
 extern "C" {
 #endif
 
-#define UI_MAX_CELLS 24
+#define UI_MAX_CELLS 32
+
+typedef enum { TS_IDLE = 0, TS_DISCHARGE, TS_REST, TS_DONE } test_state_t;
 
 typedef struct {
     /* tester */
-    float    voltage_v;     /* pack voltage under test            */
-    float    current_a;     /* negative = discharge               */
-    float    capacity_ah;   /* capacity moved so far              */
-    uint32_t elapsed_s;     /* test elapsed time                  */
-    float    temp_c;        /* tester temperature                 */
-    const char *state;      /* "Discharge" / "Rest" / "Done" ...  */
+    bool     tester_live;   /* false while the tester side is simulated */
+    uint8_t  state;         /* test_state_t */
+    float    voltage_v;
+    float    current_a;     /* negative = discharge */
+    float    capacity_ah;
+    float    energy_wh;
+    uint32_t elapsed_s;
+    float    temp_c;
 
-    /* BMS (over BLE) */
+    /* BMS */
     bool     bms_present;
+    bool     bms_live;      /* real BLE data (vs simulated) */
+    char     bms_name[32];
     uint8_t  soc_pct;
     float    bms_pack_v;
+    float    bms_current_a;
     uint8_t  cell_count;
     uint16_t cell_mv[UI_MAX_CELLS];
-    uint16_t cell_min_mv;
-    uint16_t cell_max_mv;
-    uint16_t imbalance_mv;
-    float    bms_temp_c;
+    uint16_t cell_min_mv, cell_max_mv, imbalance_mv;
+    uint8_t  cell_min_idx, cell_max_idx;   /* 0-based */
+    uint32_t balance_bits;
+    uint8_t  temp_count;
+    int16_t  temp_dc[4];    /* 0.1 degC; JK: T1, T2, MOS */
 } online_sample_t;
 
 /* Build the OnLine screen (its own screen object). Call with the display locked. */
 lv_obj_t *ui_online_create(void);
 
-/* Push a new sample: updates readouts, cell bars and advances the chart. */
+/* Readouts + cell grid. */
 void ui_online_update(const online_sample_t *s);
 
-/* Register the Print-button handler (called from the LVGL context on tap). */
-void ui_online_set_print_cb(void (*cb)(void));
+/* Redraw the chart from the history (cheap enough every ~1 s). */
+void ui_online_chart_refresh(void);
 
-/* Register the Wi-Fi settings button handler. */
-void ui_online_set_settings_cb(void (*cb)(void));
+/* 0 = discharge (U/I), 1 = cell imbalance. */
+void ui_online_set_chart_mode(int mode);
 
-/* Register the Printer settings button handler. */
-void ui_online_set_printer_cb(void (*cb)(void));
-
-/* Register the BMS (Bluetooth) button handler. */
-void ui_online_set_bms_cb(void (*cb)(void));
-
-/* Title of the BMS card, e.g. "BMS - JK_B2A24S (live)" or "BMS (simulated)". */
-void ui_online_set_bms_title(const char *text);
-
-/* Show a short status line (e.g. print result). */
-void ui_online_set_status(const char *text);
+/* Fill min/max indices and the imbalance from cell_mv[]. */
+void ui_sample_finish_cells(online_sample_t *s);
 
 #ifdef __cplusplus
 }

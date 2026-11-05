@@ -1,4 +1,4 @@
-/* Printer settings screen: discover IPP printers via mDNS, pick one, save. */
+/* Printer tab: discover IPP printers via mDNS or enter an IP; saved to NVS. */
 #pragma once
 
 #include "lvgl.h"
@@ -8,7 +8,6 @@ extern "C" {
 #endif
 
 lv_obj_t *ui_printer_create(void);
-void      ui_printer_set_back_cb(void (*cb)(void));
 
 #ifdef __cplusplus
 }
