@@ -27,9 +27,16 @@ python "$here\gen_frames.py" | Out-File -Encoding ascii "$out\frames.hex"
 $inc_blt = Join-Path $root "firmware\components\blt_proto\include"
 $src_blt = Join-Path $root "firmware\components\blt_proto\blt_proto.c"
 $inc_bms = Join-Path $root "firmware\components\bms\include"
-# bms tests link against every bms source (shared bms_recalc_cells etc.)
-$src_bms = (Get-ChildItem (Join-Path $root "firmware\components\bms") -Filter *.c |
-            ForEach-Object { "`"$($_.FullName)`"" }) -join " "
+# component tests link against every .c in that component (shared helpers)
+function SrcsOf($comp) {
+    (Get-ChildItem (Join-Path $root "firmware\components\$comp") -Filter *.c |
+        ForEach-Object { "`"$($_.FullName)`"" }) -join " "
+}
+$src_bms    = SrcsOf "bms"
+$inc_report = Join-Path $root "firmware\components\report\include"
+$src_report = SrcsOf "report"
+$inc_ipp    = Join-Path $root "firmware\components\print_ipp\include"
+$src_ipp    = SrcsOf "print_ipp"
 
 # discover tests/host/test_*.c and assign includes/sources/args by name
 $tests = @()
@@ -39,6 +46,12 @@ foreach ($c in Get-ChildItem "$here\host" -Filter "test_*.c" | Sort-Object Name)
         $tests += @{ name = $name; inc = $inc_blt; src = "`"$src_blt`""; args = "`"$out\frames.hex`"" }
     } elseif ($name -like "test_bms*") {
         $tests += @{ name = $name; inc = $inc_bms; src = $src_bms; args = "" }
+    } elseif ($name -eq "test_report") {
+        $tests += @{ name = $name; inc = $inc_report; src = $src_report; args = "`"$out\report.pgm`"" }
+    } elseif ($name -eq "test_urf") {
+        $tests += @{ name = $name; inc = $inc_report; src = $src_report; args = "" }
+    } elseif ($name -eq "test_ipp") {
+        $tests += @{ name = $name; inc = $inc_ipp; src = $src_ipp; args = "" }
     }
 }
 
