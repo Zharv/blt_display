@@ -1,4 +1,5 @@
 #include "netw.h"
+#include "cp_update.h"
 
 #include <string.h>
 #include <stdlib.h>
@@ -93,6 +94,17 @@ static void diag_task(void *arg)
     esp_wifi_get_mac(WIFI_IF_STA, mac);
     ESP_LOGW(TAG, "connectivity test (gw=%s, my mac=%02x:%02x:%02x:%02x:%02x:%02x):", gw,
              mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    wifi_ap_record_t ap = {0};
+    if (esp_wifi_sta_get_ap_info(&ap) == ESP_OK) {
+        uint8_t proto = 0;
+        esp_wifi_get_protocol(WIFI_IF_STA, &proto);
+        ESP_LOGW(TAG, "  assoc: rssi=%d auth=%d pair=%d group=%d ap[b%d g%d n%d ax%d] sta_proto=0x%02x",
+                 ap.rssi, ap.authmode, ap.pairwise_cipher, ap.group_cipher,
+                 ap.phy_11b, ap.phy_11g, ap.phy_11n, ap.phy_11ax, proto);
+        ESP_LOGW(TAG, "  bssid=%02x:%02x:%02x:%02x:%02x:%02x ch=%d",
+                 ap.bssid[0], ap.bssid[1], ap.bssid[2], ap.bssid[3], ap.bssid[4], ap.bssid[5],
+                 ap.primary);
+    }
     ESP_LOGW(TAG, "  gateway   %s:80   -> %s", gw, conntest(gw, 80, 4000) ? "OK" : "FAIL");
     ESP_LOGW(TAG, "  internet  8.8.8.8:53 -> %s", conntest("8.8.8.8", 53, 4000) ? "OK" : "FAIL");
     netw_printer_t p;
@@ -181,6 +193,9 @@ void netw_start(void)
     esp_hosted_init();
     esp_hosted_connect_to_slave();
 
+    /* bring the C6 co-processor firmware in line with the host (may restart) */
+    cp_update_if_needed();
+
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
     esp_netif_t *sta = esp_netif_create_default_wifi_sta();
@@ -192,6 +207,11 @@ void netw_start(void)
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+    /* Keep the C6 on 802.11b/g/n: the bench AP is 11n-only anyway, and this
+     * keeps association identical to the other clients when debugging. */
+    esp_err_t perr = esp_wifi_set_protocol(WIFI_IF_STA,
+                                           WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N);
+    ESP_LOGI(TAG, "sta protocol 11b/g/n: %s", esp_err_to_name(perr));
 
     /* saved creds (NVS) win; else the build-time CONFIG default; else idle */
     char ssid[33] = {0}, pass[65] = {0};

@@ -5,6 +5,7 @@ idf_component_register(
         "ui_wifi.c"
         "ui_printer.c"
         "netw.c"
+        "cp_update.c"
         "print_job.c"
     INCLUDE_DIRS "."
     REQUIRES
@@ -16,6 +17,7 @@ idf_component_register(
         mdns
         esp_http_client
         nvs_flash
+        esp_partition
         esp_netif
         esp_event
 )

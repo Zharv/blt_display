@@ -4,6 +4,13 @@ firmware/managed_components/
 firmware/sdkconfig
 firmware/sdkconfig.old
 firmware/sdkconfig.credentials
+
+# ESP32-C6 co-processor (ESP-Hosted slave) build output
+coprocessor_c6/build/
+coprocessor_c6/managed_components/
+coprocessor_c6/sdkconfig
+coprocessor_c6/sdkconfig.old
+coprocessor_c6/dependencies.lock
 firmware/dependencies.lock
 *.log
 
