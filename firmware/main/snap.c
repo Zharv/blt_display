@@ -106,6 +106,7 @@ static void snap_task(void *arg)
         if (strcmp(line, "SNAP") == 0) do_snap();
         else if (strncmp(line, "TAB ", 4) == 0) snap_nav(atoi(line + 4));
         else if (strncmp(line, "CHART ", 6) == 0) snap_chart(atoi(line + 6));
+        else if (strncmp(line, "CELL ", 5) == 0) snap_cell(atoi(line + 5));
         else if (strcmp(line, "BMS") == 0) snap_bms_connect();
         else if (strcmp(line, "BMSOFF") == 0) snap_bms_disconnect();
 

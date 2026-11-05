@@ -39,6 +39,21 @@ static lv_obj_t *s_b_title, *s_b_tag, *s_b_soc, *s_b_v, *s_b_a, *s_b_delta, *s_b
  * LVGL 9.2's chart makes one draw task per line segment, and with ~21 series x
  * 120 points its O(n^2) task scheduler (is_independent) hung the LVGL task
  * until the watchdog fired. Now a redraw is a single image blit. */
+/* Per-cell identity colours: the same colour on the tile and on its plot line,
+ * so a cell can be followed through the test. Muted for the dark UI; neighbours
+ * alternate warm/cool and light/dark (checked for colour-blind separation of
+ * adjacent cells). 20+ colours can't all be told apart, so a tap on a tile
+ * highlights that cell on the plot. */
+static const uint32_t CELL_PAL[UI_MAX_CELLS] = {
+    0xbc666e, 0x17a7b4, 0xa07e27, 0x7990d8, 0xba6b4c, 0x3ca0ca, 0x838a33, 0x9886d0,
+    0xad762f, 0x6396d6, 0xbc6761, 0x23a4bd, 0x968328, 0x868cd6, 0xb66f40, 0x4b9cd0,
+    0x768e3e, 0xa382ca, 0xa67b29, 0x7192d7, 0xbb6954, 0x32a2c5, 0x8b872e, 0x9188d3,
+    0xb17335, 0x5a99d4, 0xbc6669, 0x1ba6b7, 0x9d8026, 0x7e8ed7, 0xb96d47, 0x429fcc,
+};
+static inline lv_color_t cell_color(int i) { return lv_color_hex(CELL_PAL[i % UI_MAX_CELLS]); }
+static int s_sel = -1;          /* highlighted cell, -1 = none */
+static bool s_plot_dirty;
+
 #define AX_PRI 0
 #define AX_SEC 1
 #define PT_NONE LV_CHART_POINT_NONE
@@ -47,6 +62,7 @@ typedef struct {
     lv_color_t c;
     bool       hidden;
     uint8_t    axis;
+    int8_t     cell;            /* cell index, -1 for the other series */
 } pser_t;
 
 static pser_t s_ps[UI_MAX_CELLS + 4];
@@ -64,6 +80,7 @@ static pser_t *ps_add(lv_color_t c, int axis)
     p->c = c;
     p->axis = (uint8_t)axis;
     p->hidden = false;
+    p->cell = -1;
     for (int k = 0; k < CHART_PTS; k++) p->v[k] = PT_NONE;
     return p;
 }
@@ -74,16 +91,17 @@ static inline void ps_color(pser_t *p, lv_color_t c) { p->c = c; }
 static inline void ps_range(int axis, int32_t lo, int32_t hi) { s_rng[axis][0] = lo; s_rng[axis][1] = hi > lo ? hi : lo + 1; }
 static inline void ps_points(int n) { s_pts = n < 2 ? 2 : n > CHART_PTS ? CHART_PTS : n; }
 
-static void plot_line(uint16_t *fb, int sp, int x0, int y0, int x1, int y1, uint16_t c)
+static void plot_line(uint16_t *fb, int sp, int x0, int y0, int x1, int y1, uint16_t c, int th)
 {
     int dx = abs(x1 - x0), sx = x0 < x1 ? 1 : -1;
     int dy = -abs(y1 - y0), sy = y0 < y1 ? 1 : -1;
     int err = dx + dy;
     for (;;) {
-        if (x0 >= 0 && x0 < CHART_W) {           /* 2 px thick */
-            if (y0 >= 0 && y0 < CHART_H) fb[y0 * sp + x0] = c;
-            if (y0 + 1 >= 0 && y0 + 1 < CHART_H) fb[(y0 + 1) * sp + x0] = c;
-        }
+        if (x0 >= 0 && x0 < CHART_W)
+            for (int t = 0; t < th; t++) {
+                int y = y0 + t - th / 2;
+                if (y >= 0 && y < CHART_H) fb[y * sp + x0] = c;
+            }
         if (x0 == x1 && y0 == y1) break;
         int e2 = 2 * err;
         if (e2 >= dy) { err += dy; x0 += sx; }
@@ -91,10 +109,10 @@ static void plot_line(uint16_t *fb, int sp, int x0, int y0, int x1, int y1, uint
     }
 }
 
-static void plot_series(uint16_t *fb, int sp, const pser_t *p)
+static void plot_series(uint16_t *fb, int sp, const pser_t *p, lv_color_t col, int th)
 {
     int32_t lo = s_rng[p->axis][0], hi = s_rng[p->axis][1];
-    uint16_t c = lv_color_to_u16(p->c);
+    uint16_t c = lv_color_to_u16(col);
     int px = 0, py = 0;
     bool have = false;
     for (int k = 0; k < s_pts; k++) {
@@ -104,7 +122,7 @@ static void plot_series(uint16_t *fb, int sp, const pser_t *p)
         if (t < 0) t = 0;
         if (t > CHART_H - 2) t = CHART_H - 2;
         int y = CHART_H - 2 - (int)t;
-        if (have) plot_line(fb, sp, px, py, x, y, c);
+        if (have) plot_line(fb, sp, px, py, x, y, c, th);
         px = x; py = y; have = true;
     }
 }
@@ -123,21 +141,27 @@ static void plot_render(void)
         int y = i * (CHART_H - 1) / 4;
         for (int x = 0; x < CHART_W; x++) fb[y * sp + x] = grid;
     }
-    /* grey cells first, then the coloured series on top */
-    for (int pass = 0; pass < 2; pass++)
+    /* cells first (dimmed when another one is highlighted), then the other
+     * series, then the highlighted cell thick on top */
+    lv_color_t bgc = C_CARD;
+    for (int pass = 0; pass < 3; pass++)
         for (int i = 0; i < s_ps_n; i++) {
             const pser_t *p = &s_ps[i];
             if (p->hidden) continue;
-            bool grey = lv_color_eq(p->c, C_GRAYLINE);
-            if ((pass == 0) != grey) continue;
-            plot_series(fb, sp, p);
+            bool is_cell = p->cell >= 0, is_sel = is_cell && p->cell == s_sel;
+            if (pass == 0 && is_cell && !is_sel)
+                plot_series(fb, sp, p, s_sel >= 0 ? lv_color_mix(p->c, bgc, 80) : p->c, 2);
+            else if (pass == 1 && !is_cell)
+                plot_series(fb, sp, p, p->c, 2);
+            else if (pass == 2 && is_sel)
+                plot_series(fb, sp, p, lv_color_lighten(p->c, 60), 4);
         }
     lv_obj_invalidate(s_chart);
 }
 static chart_mode_t s_mode;
 /* cells */
 static lv_obj_t *s_cells_hdr, *s_cell[UI_MAX_CELLS], *s_cell_no[UI_MAX_CELLS],
-                *s_cell_bar[UI_MAX_CELLS], *s_cell_v[UI_MAX_CELLS];
+                *s_cell_bar[UI_MAX_CELLS], *s_cell_v[UI_MAX_CELLS], *s_cell_strip[UI_MAX_CELLS];
 static int s_cells_laid;
 
 /* ------------------------------------------------------------- helpers */
@@ -282,9 +306,16 @@ static void legend(int i, const char *txt, lv_color_t c)
     set_txt_color(s_leg[i], c);
 }
 
+static void legend_plain(int i, const char *txt, lv_color_t c)
+{
+    set_hidden(s_leg[i], !txt);
+    if (!txt) return;
+    set_txt(s_leg[i], "%s", txt);
+    set_txt_color(s_leg[i], c);
+}
+
 /* last visibility / colour applied to each cell series (-1 = unknown) */
 static int8_t s_cell_shown[UI_MAX_CELLS] = { [0 ... UI_MAX_CELLS - 1] = -1 };
-static int8_t s_cell_col[UI_MAX_CELLS]   = { [0 ... UI_MAX_CELLS - 1] = -1 };
 
 static void show_mode_series(void)
 {
@@ -292,7 +323,8 @@ static void show_mode_series(void)
     ps_hide(s_ser_ut, !d);
     ps_hide(s_ser_ub, !d);
     ps_hide(s_ser_i, !d);
-    ps_hide(s_ser_d, d);
+    ps_hide(s_ser_d, true);          /* Δ is shown as text, not on a second axis */
+    set_hidden(s_sc_r, !d);
     for (int c = 0; c < UI_MAX_CELLS; c++) {
         ps_hide(s_ser_c[c], true);
         s_cell_shown[c] = 0;
@@ -330,7 +362,8 @@ void ui_online_chart_refresh(void)
     const hist_pt_t *tail = n ? hist_at(n - 1) : NULL;
     uint32_t tail_t = tail ? tail->t_s : 0;
     static uint32_t last_t;
-    if (n == last_n && (int)s_mode == last_mode && tail == last_tail && tail_t == last_t) return;
+    if (!s_plot_dirty && n == last_n && (int)s_mode == last_mode && tail == last_tail && tail_t == last_t) return;
+    s_plot_dirty = false;
     last_n = n; last_mode = (int)s_mode; last_tail = tail; last_t = tail_t;
     int pts = n < 2 ? 2 : (n < CHART_PTS ? n : CHART_PTS);
     ps_points(pts);
@@ -417,29 +450,24 @@ void ui_online_chart_refresh(void)
         int rst = nice_step((int)ceilf(dmax));
         int rhi = (((int)ceilf(dmax) + rst - 1) / rst) * rst;
         if (rhi < 5) rhi = 5;
+        (void)rhi;
         ps_range(AX_PRI, -dr * 10, dr * 10);
-        ps_range(AX_SEC, 0, rhi * 10);
         scale_range(s_sc_l, -dr, dr, 5);
-        scale_range(s_sc_r, 0, rhi, rhi / rst + 1);
 
-        /* who drifted most by the end of the record */
+        /* spread now (last sample) */
         const hist_pt_t *last = hist_at(n - 1);
-        int hi_c = 0, lo_c = 0;
+        int dnow = 0;
         if (last->n >= 2) {
-            for (int c = 1; c < last->n; c++) {
-                if (last->cell[c] > last->cell[hi_c]) hi_c = c;
-                if (last->cell[c] < last->cell[lo_c]) lo_c = c;
+            uint16_t lo = 0xFFFF, hi = 0;
+            for (int c = 0; c < last->n; c++) {
+                if (last->cell[c] < lo) lo = last->cell[c];
+                if (last->cell[c] > hi) hi = last->cell[c];
             }
+            dnow = hi - lo;
         }
         for (int c = 0; c < UI_MAX_CELLS; c++) {
             int use = c < ncell;
             if (s_cell_shown[c] != use) { ps_hide(s_ser_c[c], !use); s_cell_shown[c] = (int8_t)use; }
-            if (!use) continue;
-            int k = c == hi_c ? 1 : c == lo_c ? 2 : 0;
-            if (s_cell_col[c] != k) {
-                ps_color(s_ser_c[c], k == 1 ? C_RED : k == 2 ? C_BLUE : C_GRAYLINE);
-                s_cell_col[c] = (int8_t)k;
-            }
         }
         for (int k = 0; k < pts; k++) {
             const hist_pt_t *p = hist_at((int)((long)k * (n - 1) / (pts - 1)));
@@ -458,15 +486,17 @@ void ui_online_chart_refresh(void)
             ps_set(s_ser_d, k,
                                      p->n >= 2 ? (int32_t)((hi - lo) * 10) : LV_CHART_POINT_NONE);
         }
-        /* draw the highlighted cells and the delta on top of the grey ones */
-        char l1[48], l2[32], l3[32];
-        snprintf(l1, sizeof l1, "%s, %s", tr(S_CH_DELTA), tr(S_U_MV));
-        snprintf(l2, sizeof l2, "#%d %s", hi_c + 1, tr(S_CH_UP));
-        snprintf(l3, sizeof l3, "#%d %s", lo_c + 1, tr(S_CH_DOWN));
-        legend(0, l1, C_AMBER);
-        legend(1, l2, C_RED);
-        legend(2, l3, C_BLUE);
-        legend(3, tr(S_CH_OTHERS), C_GRAYLINE);
+        char l1[64], l3[16];
+        snprintf(l1, sizeof l1, tr(S_CH_DELTA_NOW), dnow, (int)lroundf(dmax));
+        legend_plain(0, l1, C_TXT);
+        legend_plain(1, tr(S_CH_DEV), C_SUB);
+        if (s_sel >= 0 && s_sel < ncell) {
+            snprintf(l3, sizeof l3, "#%d", s_sel + 1);
+            legend(2, l3, cell_color(s_sel));
+        } else {
+            legend(2, NULL, C_SUB);
+        }
+        legend(3, NULL, C_SUB);
     }
     plot_render();
 }
@@ -489,8 +519,26 @@ static void cells_layout(int n)
         int r = i / cols, c = i % cols;
         lv_obj_set_pos(s_cell[i], 12 + c * (cw + gap), 40 + r * (ch + gap));
         lv_obj_set_size(s_cell[i], cw, ch);
+        lv_obj_set_width(s_cell_strip[i], cw - 16);
         lv_obj_set_width(s_cell_bar[i], cw > 30 ? 16 : 10);
     }
+}
+
+/* tap a tile: highlight that cell on the plot (tap again to clear) */
+static void cell_tap_cb(lv_event_t *e)
+{
+    ui_online_select_cell((int)(intptr_t)lv_event_get_user_data(e));
+}
+
+void ui_online_select_cell(int i)
+{
+    if (i < -1 || i >= UI_MAX_CELLS) return;
+    if (s_sel >= 0) lv_obj_set_style_outline_width(s_cell[s_sel], 0, 0);
+    s_sel = (s_sel == i || i < 0) ? -1 : i;
+    if (s_sel >= 0) lv_obj_set_style_outline_width(s_cell[s_sel], 2, 0);
+    if (s_mode != MODE_IMBALANCE) ui_online_set_chart_mode(1);   /* jump to the cells plot */
+    s_plot_dirty = true;
+    ui_online_chart_refresh();
 }
 
 static void update_cells(const online_sample_t *s)
@@ -520,16 +568,15 @@ static void update_cells(const online_sample_t *s)
         if (h < 4) h = 4;
         if (h > bar_h + 4) h = bar_h + 4;
         if (lv_obj_get_style_height(s_cell_bar[i], LV_PART_MAIN) != h) lv_obj_set_height(s_cell_bar[i], h);
-        lv_color_t c = C_GREEN;
-        if (s->imbalance_mv >= 5) {
-            if (i == s->cell_max_idx) c = C_RED;
-            else if (i == s->cell_min_idx) c = C_BLUE;
-        }
-        set_bg_color(s_cell_bar[i], c);
         int bw = ((s->balance_bits >> i) & 1u) ? 2 : 0;
         if (lv_obj_get_style_border_width(s_cell[i], LV_PART_MAIN) != bw)
             lv_obj_set_style_border_width(s_cell[i], bw, 0);
-        set_txt(s_cell_v[i], "%d.%03d", mv / 1000, mv % 1000);
+        const char *mark = "";
+        if (s->imbalance_mv >= 5) {
+            if (i == s->cell_max_idx) mark = LV_SYMBOL_UP " ";
+            else if (i == s->cell_min_idx) mark = LV_SYMBOL_DOWN " ";
+        }
+        set_txt(s_cell_v[i], "%s%d.%03d", mark, mv / 1000, mv % 1000);
     }
 }
 
@@ -605,7 +652,10 @@ lv_obj_t *ui_online_create(void)
     lv_canvas_set_draw_buf(s_chart, s_plot_buf);
     lv_obj_set_pos(s_chart, CHART_X, CHART_Y);
     s_ps_n = 0;
-    for (int c = 0; c < UI_MAX_CELLS; c++) s_ser_c[c] = ps_add(C_GRAYLINE, AX_PRI);
+    for (int c = 0; c < UI_MAX_CELLS; c++) {
+        s_ser_c[c] = ps_add(cell_color(c), AX_PRI);
+        s_ser_c[c]->cell = (int8_t)c;
+    }
     s_ser_d = ps_add(C_AMBER, AX_SEC);
     s_ser_i = ps_add(C_BLUE, AX_SEC);
     s_ser_ub = ps_add(C_VIOLET, AX_PRI);
@@ -625,19 +675,29 @@ lv_obj_t *ui_online_create(void)
     lv_obj_t *cl = mk_card(scr, COL_R_X, CELLS_Y, COL_R_W, CELLS_H);
     s_cells_hdr = mk_label(cl, tr(S_CELLS), 20, C_SUB);
     lv_obj_set_pos(s_cells_hdr, 16, 10);
-    lv_obj_t *k1 = mk_label(cl, "min", 16, C_BLUE);
-    lv_obj_align(k1, LV_ALIGN_TOP_RIGHT, -200, 14);
-    lv_obj_t *k2 = mk_label(cl, "max", 16, C_RED);
-    lv_obj_align(k2, LV_ALIGN_TOP_RIGHT, -140, 14);
-    lv_obj_t *k3 = mk_label(cl, tr(S_BALANCING), 16, C_AMBER);
-    lv_obj_align(k3, LV_ALIGN_TOP_RIGHT, -16, 14);
+    lv_obj_t *keys = lv_obj_create(cl);
+    lv_obj_remove_style_all(keys);
+    lv_obj_set_size(keys, LV_SIZE_CONTENT, 24);
+    lv_obj_set_flex_flow(keys, LV_FLEX_FLOW_ROW);
+    lv_obj_set_style_pad_column(keys, 18, 0);
+    lv_obj_align(keys, LV_ALIGN_TOP_RIGHT, -16, 12);
+    mk_label(keys, tr(S_CELL_TAP), 16, C_MUTED);
+    mk_label(keys, LV_SYMBOL_UP " max", 16, C_SUB);
+    mk_label(keys, LV_SYMBOL_DOWN " min", 16, C_SUB);
+    mk_label(keys, tr(S_BALANCING), 16, C_AMBER);
     for (int i = 0; i < UI_MAX_CELLS; i++) {
         s_cell[i] = mk_box(cl, 0, 0, 60, 90, C_CARD2, 8);
         lv_obj_set_style_border_color(s_cell[i], C_AMBER, 0);
         s_cell_no[i] = mk_label(s_cell[i], "", 16, C_SUB);
         lv_label_set_text_fmt(s_cell_no[i], "%d", i + 1);
         lv_obj_align(s_cell_no[i], LV_ALIGN_TOP_MID, 0, 4);
-        s_cell_bar[i] = mk_box(s_cell[i], 0, 0, 16, 10, C_GREEN, 3);
+        s_cell_strip[i] = mk_box(s_cell[i], 0, 0, 40, 4, cell_color(i), 2);
+        lv_obj_align(s_cell_strip[i], LV_ALIGN_TOP_MID, 0, 2);
+        s_cell_bar[i] = mk_box(s_cell[i], 0, 0, 16, 10, cell_color(i), 3);
+        lv_obj_add_flag(s_cell[i], LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_event_cb(s_cell[i], cell_tap_cb, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+        lv_obj_set_style_outline_color(s_cell[i], C_TXT, 0);
+        lv_obj_set_style_outline_pad(s_cell[i], 1, 0);
         lv_obj_align(s_cell_bar[i], LV_ALIGN_BOTTOM_MID, 0, -28);
         s_cell_v[i] = mk_label(s_cell[i], "", 16, C_TXT);
         lv_obj_align(s_cell_v[i], LV_ALIGN_BOTTOM_MID, 0, -4);

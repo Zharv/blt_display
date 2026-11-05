@@ -391,6 +391,13 @@ void snap_bms_connect(void)
 
 void snap_bms_disconnect(void) { bms_ble_disconnect(); }
 
+void snap_cell(int n)
+{
+    bsp_display_lock(0);
+    ui_online_select_cell(n - 1);
+    bsp_display_unlock();
+}
+
 void snap_chart(int mode)
 {
     bsp_display_lock(0);

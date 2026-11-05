@@ -55,6 +55,9 @@ void ui_online_chart_refresh(void);
 /* 0 = discharge (U/I), 1 = cell imbalance. */
 void ui_online_set_chart_mode(int mode);
 
+/* Highlight cell i (0-based) on the imbalance plot; same i again or -1 clears. */
+void ui_online_select_cell(int i);
+
 /* Fill min/max indices and the imbalance from cell_mv[]. */
 void ui_sample_finish_cells(online_sample_t *s);
 

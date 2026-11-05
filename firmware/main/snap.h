@@ -19,6 +19,8 @@ void snap_start(void);
  * "CHART m" sets the OnLine chart mode (0 discharge, 1 imbalance). */
 void snap_nav(int tab);
 void snap_chart(int mode);
+/* "CELL n": toggle the highlight of cell n (1-based) as a tap would. */
+void snap_cell(int n);
 /* "BMS": scan and connect to the first JK found; "BMSOFF": disconnect. */
 void snap_bms_connect(void);
 void snap_bms_disconnect(void);

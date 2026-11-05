@@ -46,6 +46,9 @@ static const char *const STR[S__COUNT][2] = {
     [S_CH_UP]           = { "вгору", "high" },
     [S_CH_DOWN]         = { "вниз", "low" },
     [S_CH_OTHERS]       = { "решта", "others" },
+    [S_CH_DELTA_NOW]    = { "Δ %d мВ  ·  макс %d мВ", "Δ %d mV  ·  max %d mV" },
+    [S_CH_DEV]          = { "мВ від середнього", "mV from average" },
+    [S_CELL_TAP]        = { "тап — виділити на графіку", "tap to highlight" },
 
     [S_PR_PRINTING]     = { "друк…", "printing…" },
     [S_PR_OK]           = { "надруковано", "printed" },
