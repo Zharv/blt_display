@@ -3,6 +3,7 @@ idf_component_register(
         "main.c"
         "ui_online.c"
         "ui_wifi.c"
+        "ui_printer.c"
         "netw.c"
         "print_job.c"
     INCLUDE_DIRS "."

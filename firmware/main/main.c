@@ -13,6 +13,7 @@
 
 #include "ui.h"
 #include "ui_wifi.h"
+#include "ui_printer.h"
 #include "netw.h"
 #include "print_job.h"
 #include "report.h"
@@ -107,15 +108,25 @@ static void tick_cb(lv_timer_t *t)
     ui_online_update(&o);
 }
 
+/* LVGL is driven by the esp_lvgl_port task; any lv_* call from another task
+ * must hold the port lock (bsp_display_lock), or the object tree races and the
+ * caller can spin forever inside e.g. lv_label_set_text. */
+static void set_status_locked(const char *msg)
+{
+    bsp_display_lock(0);
+    ui_online_set_status(msg);
+    bsp_display_unlock();
+}
+
 static void print_task(void *arg)
 {
     (void)arg;
-    ui_online_set_status("printing...");
+    set_status_locked("printing...");
     esp_err_t e = print_job_send(&s_rep);
     ESP_LOGI(TAG, "print result: %s", esp_err_to_name(e));
-    ui_online_set_status(e == ESP_OK ? "printed OK" :
-                         e == ESP_ERR_NOT_FOUND ? "printer not found" :
-                         e == ESP_ERR_INVALID_STATE ? "no Wi-Fi" : "print failed");
+    set_status_locked(e == ESP_OK ? "printed OK" :
+                      e == ESP_ERR_NOT_FOUND ? "printer not found" :
+                      e == ESP_ERR_INVALID_STATE ? "no Wi-Fi" : "print failed");
     s_printing = false;
     vTaskDelete(NULL);
 }
@@ -123,6 +134,7 @@ static void print_task(void *arg)
 static void on_print(void)
 {
     if (s_printing) return;
+    ESP_LOGI(TAG, "PRINT tapped");
     online_sample_t o = {0};
     sim_fill_sample(&s_sim, &o);
     for (int i = 0; i < o.cell_count && i < UI_MAX_CELLS; i++) s_rep_cells[i] = o.cell_mv[i];
@@ -154,8 +166,10 @@ static void netw_task(void *arg)
 
 static lv_obj_t *s_scr_online;
 static lv_obj_t *s_scr_wifi;
-static void go_wifi(void)   { lv_screen_load(s_scr_wifi); }
-static void go_online(void) { lv_screen_load(s_scr_online); }
+static lv_obj_t *s_scr_printer;
+static void go_wifi(void)    { lv_screen_load(s_scr_wifi); }
+static void go_printer(void) { lv_screen_load(s_scr_printer); }
+static void go_online(void)  { lv_screen_load(s_scr_online); }
 
 void app_main(void)
 {
@@ -173,9 +187,12 @@ void app_main(void)
     bsp_display_lock(0);
     s_scr_online = ui_online_create();
     s_scr_wifi = ui_wifi_create();
+    s_scr_printer = ui_printer_create();
     ui_online_set_print_cb(on_print);
     ui_online_set_settings_cb(go_wifi);
+    ui_online_set_printer_cb(go_printer);
     ui_wifi_set_back_cb(go_online);
+    ui_printer_set_back_cb(go_online);
     lv_screen_load(s_scr_online);
     online_sample_t o = {0};
     sim_fill_sample(&s_sim, &o);

@@ -28,6 +28,7 @@ static int s_cell_shown;
 static lv_obj_t *s_status;
 static void (*s_print_cb)(void);
 static void (*s_settings_cb)(void);
+static void (*s_printer_cb)(void);
 
 static void print_btn_cb(lv_event_t *e)
 {
@@ -41,8 +42,15 @@ static void settings_btn_cb(lv_event_t *e)
     if (s_settings_cb) s_settings_cb();
 }
 
+static void printer_btn_cb(lv_event_t *e)
+{
+    (void)e;
+    if (s_printer_cb) s_printer_cb();
+}
+
 void ui_online_set_print_cb(void (*cb)(void)) { s_print_cb = cb; }
 void ui_online_set_settings_cb(void (*cb)(void)) { s_settings_cb = cb; }
+void ui_online_set_printer_cb(void (*cb)(void)) { s_printer_cb = cb; }
 
 void ui_online_set_status(const char *text)
 {
@@ -106,7 +114,7 @@ lv_obj_t *ui_online_create(void)
     lv_label_set_text(s_lbl_state, "--");
     lv_obj_set_style_text_color(s_lbl_state, COL_GREEN, 0);
     lv_obj_set_style_text_font(s_lbl_state, &lv_font_montserrat_22, 0);
-    lv_obj_align(s_lbl_state, LV_ALIGN_TOP_RIGHT, -200, 16);
+    lv_obj_align(s_lbl_state, LV_ALIGN_TOP_MID, 0, 18);
 
     /* Print button */
     lv_obj_t *pb = lv_button_create(scr);
@@ -120,22 +128,33 @@ lv_obj_t *ui_online_create(void)
     lv_obj_set_style_text_font(pl, &lv_font_montserrat_20, 0);
     lv_obj_center(pl);
 
-    /* Settings (Wi-Fi) button */
+    /* Wi-Fi settings button */
     lv_obj_t *sb = lv_button_create(scr);
-    lv_obj_set_size(sb, 56, 44);
+    lv_obj_set_size(sb, 52, 44);
     lv_obj_align(sb, LV_ALIGN_TOP_RIGHT, -180, 8);
     lv_obj_set_style_bg_color(sb, COL_CARD, 0);
     lv_obj_set_style_radius(sb, 10, 0);
     lv_obj_add_event_cb(sb, settings_btn_cb, LV_EVENT_CLICKED, NULL);
     lv_obj_t *sl2 = lv_label_create(sb);
-    lv_label_set_text(sl2, LV_SYMBOL_SETTINGS);
+    lv_label_set_text(sl2, LV_SYMBOL_WIFI);
     lv_obj_center(sl2);
+
+    /* Printer settings button */
+    lv_obj_t *prb = lv_button_create(scr);
+    lv_obj_set_size(prb, 52, 44);
+    lv_obj_align(prb, LV_ALIGN_TOP_RIGHT, -238, 8);
+    lv_obj_set_style_bg_color(prb, COL_CARD, 0);
+    lv_obj_set_style_radius(prb, 10, 0);
+    lv_obj_add_event_cb(prb, printer_btn_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *prl = lv_label_create(prb);
+    lv_label_set_text(prl, LV_SYMBOL_SAVE);
+    lv_obj_center(prl);
 
     s_status = lv_label_create(scr);
     lv_label_set_text(s_status, "");
-    lv_obj_set_style_text_color(s_status, COL_SUB, 0);
-    lv_obj_set_style_text_font(s_status, &lv_font_montserrat_16, 0);
-    lv_obj_align(s_status, LV_ALIGN_TOP_RIGHT, -180, 58);
+    lv_obj_set_style_text_color(s_status, COL_AMBER, 0);
+    lv_obj_set_style_text_font(s_status, &lv_font_montserrat_20, 0);
+    lv_obj_align(s_status, LV_ALIGN_TOP_RIGHT, -20, 60);
 
     /* tester card (left) */
     lv_obj_t *ct = make_card(scr, 16, 56, 612, 300, "TESTER");

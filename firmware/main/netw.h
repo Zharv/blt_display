@@ -36,6 +36,22 @@ void netw_get_ip_str(char *buf, size_t n);
 /* SSID currently targeted (from NVS/last connect), "" if none. */
 void netw_get_ssid(char *buf, size_t n);
 
+typedef struct {
+    char     name[64];     /* mDNS instance name, for display */
+    char     ip[16];
+    uint16_t port;
+    char     resource[48]; /* IPP resource path, e.g. "/ipp/print" */
+} netw_printer_t;
+
+/* Discover IPP printers (_ipp._tcp) via mDNS (blocking ~3 s). Returns count. */
+int  netw_scan_printers(netw_printer_t *out, int max);
+
+/* Persist the chosen printer to NVS (used by printing). */
+void netw_set_printer(const netw_printer_t *p);
+
+/* Load the saved printer; returns false if none saved. */
+bool netw_get_printer(netw_printer_t *p);
+
 /*
  * Resolve the printer. If CONFIG_BLT_PRINTER_HOST is set it is used directly;
  * otherwise an mDNS query for _ipp._tcp picks the first responder.

@@ -45,8 +45,11 @@ void ui_online_update(const online_sample_t *s);
 /* Register the Print-button handler (called from the LVGL context on tap). */
 void ui_online_set_print_cb(void (*cb)(void));
 
-/* Register the Settings-button handler. */
+/* Register the Wi-Fi settings button handler. */
 void ui_online_set_settings_cb(void (*cb)(void));
+
+/* Register the Printer settings button handler. */
+void ui_online_set_printer_cb(void (*cb)(void));
 
 /* Show a short status line (e.g. print result). */
 void ui_online_set_status(const char *text);

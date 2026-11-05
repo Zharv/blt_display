@@ -179,35 +179,85 @@ void netw_get_ip_str(char *buf, size_t n)
 
 void netw_get_ssid(char *buf, size_t n) { strlcpy(buf, s_ssid, n); }
 
+int netw_scan_printers(netw_printer_t *out, int max)
+{
+    mdns_result_t *res = NULL;
+    uint8_t want = (uint8_t)(max > 20 ? 20 : max);
+    if (mdns_query_ptr("_ipp", "_tcp", 3000, want, &res) != ESP_OK || res == NULL) {
+        if (res) mdns_query_results_free(res);
+        return 0;
+    }
+    int n = 0;
+    for (mdns_result_t *r = res; r != NULL && n < max; r = r->next) {
+        if (!r->addr) continue;
+        snprintf(out[n].ip, sizeof out[n].ip, IPSTR, IP2STR(&r->addr->addr.u_addr.ip4));
+        out[n].port = r->port ? r->port : 631;
+        strlcpy(out[n].name, r->instance_name ? r->instance_name : out[n].ip, sizeof out[n].name);
+        strlcpy(out[n].resource, "/ipp/print", sizeof out[n].resource);
+        for (size_t i = 0; i < r->txt_count; i++) {   /* TXT "rp" = resource path */
+            if (r->txt[i].key && strcmp(r->txt[i].key, "rp") == 0 && r->txt[i].value) {
+                snprintf(out[n].resource, sizeof out[n].resource, "/%s", r->txt[i].value);
+            }
+        }
+        n++;
+    }
+    mdns_query_results_free(res);
+    return n;
+}
+
+void netw_set_printer(const netw_printer_t *p)
+{
+    nvs_handle_t h;
+    if (nvs_open("printer", NVS_READWRITE, &h) != ESP_OK) return;
+    nvs_set_str(h, "ip", p->ip);
+    nvs_set_u16(h, "port", p->port);
+    nvs_set_str(h, "res", p->resource);
+    nvs_set_str(h, "name", p->name);
+    nvs_commit(h);
+    nvs_close(h);
+    ESP_LOGI(TAG, "printer saved: %s %s:%u%s", p->name, p->ip, (unsigned)p->port, p->resource);
+}
+
+bool netw_get_printer(netw_printer_t *p)
+{
+    nvs_handle_t h;
+    if (nvs_open("printer", NVS_READONLY, &h) != ESP_OK) return false;
+    size_t il = sizeof p->ip, rl = sizeof p->resource, nl = sizeof p->name;
+    bool ok = nvs_get_str(h, "ip", p->ip, &il) == ESP_OK && p->ip[0];
+    if (nvs_get_u16(h, "port", &p->port) != ESP_OK) p->port = 631;
+    if (nvs_get_str(h, "res", p->resource, &rl) != ESP_OK) strlcpy(p->resource, "/ipp/print", sizeof p->resource);
+    if (nvs_get_str(h, "name", p->name, &nl) != ESP_OK) p->name[0] = '\0';
+    nvs_close(h);
+    return ok;
+}
+
 bool netw_resolve_printer(char *host, size_t host_len, uint16_t *port,
                           char *resource, size_t res_len)
 {
+    /* saved selection wins */
+    netw_printer_t saved;
+    if (netw_get_printer(&saved)) {
+        strlcpy(host, saved.ip, host_len);
+        strlcpy(resource, saved.resource, res_len);
+        *port = saved.port;
+        return true;
+    }
+
     strlcpy(resource, CONFIG_BLT_PRINTER_RESOURCE, res_len);
     *port = (uint16_t)CONFIG_BLT_PRINTER_PORT;
-
     if (strlen(CONFIG_BLT_PRINTER_HOST) > 0) {
         strlcpy(host, CONFIG_BLT_PRINTER_HOST, host_len);
         return true;
     }
 
-    mdns_result_t *results = NULL;
-    esp_err_t err = mdns_query_ptr("_ipp", "_tcp", 3000, 20, &results);
-    if (err != ESP_OK || results == NULL) {
-        ESP_LOGW(TAG, "no _ipp._tcp printer found via mDNS");
-        if (results) mdns_query_results_free(results);
-        return false;
+    /* else first mDNS responder */
+    netw_printer_t found[1];
+    if (netw_scan_printers(found, 1) >= 1) {
+        strlcpy(host, found[0].ip, host_len);
+        strlcpy(resource, found[0].resource, res_len);
+        *port = found[0].port;
+        return true;
     }
-    bool ok = false;
-    for (mdns_result_t *r = results; r != NULL; r = r->next) {
-        if (r->addr) {
-            snprintf(host, host_len, IPSTR, IP2STR(&r->addr->addr.u_addr.ip4));
-            if (r->port) *port = r->port;
-            ESP_LOGI(TAG, "printer %s at %s:%u", r->instance_name ? r->instance_name : "?",
-                     host, (unsigned)*port);
-            ok = true;
-            break;
-        }
-    }
-    mdns_query_results_free(results);
-    return ok;
+    ESP_LOGW(TAG, "no _ipp._tcp printer found via mDNS");
+    return false;
 }
