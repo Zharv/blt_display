@@ -40,15 +40,16 @@ static lv_obj_t *s_b_title, *s_b_tag, *s_b_soc, *s_b_v, *s_b_a, *s_b_delta, *s_b
  * 120 points its O(n^2) task scheduler (is_independent) hung the LVGL task
  * until the watchdog fired. Now a redraw is a single image blit. */
 /* Per-cell identity colours: the same colour on the tile and on its plot line,
- * so a cell can be followed through the test. Muted for the dark UI; neighbours
- * alternate warm/cool and light/dark (checked for colour-blind separation of
- * adjacent cells). 20+ colours can't all be told apart, so a tap on a tile
- * highlights that cell on the plot. */
+ * so a cell can be followed through the test. Picked greedily in OKLab: each
+ * next colour is the one farthest from ALL earlier ones (chroma <= 0.135 so
+ * they stay muted on the dark UI), so the first N cells of any pack get the N
+ * best-separated colours and none repeats (closest pair among the first 20:
+ * dE 9.9). A tap on a tile also highlights that cell on the plot. */
 static const uint32_t CELL_PAL[UI_MAX_CELLS] = {
-    0xbc666e, 0x17a7b4, 0xa07e27, 0x7990d8, 0xba6b4c, 0x3ca0ca, 0x838a33, 0x9886d0,
-    0xad762f, 0x6396d6, 0xbc6761, 0x23a4bd, 0x968328, 0x868cd6, 0xb66f40, 0x4b9cd0,
-    0x768e3e, 0xa382ca, 0xa67b29, 0x7192d7, 0xbb6954, 0x32a2c5, 0x8b872e, 0x9188d3,
-    0xb17335, 0x5a99d4, 0xbc6669, 0x1ba6b7, 0x9d8026, 0x7e8ed7, 0xb96d47, 0x429fcc,
+    0xb58d89, 0x49def2, 0x0d7cb6, 0xd5cb65, 0x49863b, 0xe7aefe, 0x98599e, 0x79a0f0,
+    0x4eb986, 0xa66205, 0xfda296, 0xaa992e, 0x62908e, 0xc487d2, 0x7ee0a5, 0xabbfdf,
+    0xbc5b64, 0x36b3c9, 0x7e7ace, 0xb0b996, 0xe1994f, 0x707191, 0x797654, 0xc8793b,
+    0xe27e98, 0xd3a4be, 0x8d97b8, 0x039e78, 0xe4c09a, 0x8f9f7e, 0xa77395, 0x9ab85b,
 };
 static inline lv_color_t cell_color(int i) { return lv_color_hex(CELL_PAL[i % UI_MAX_CELLS]); }
 static int s_sel = -1;          /* highlighted cell, -1 = none */
