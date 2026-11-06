@@ -44,6 +44,8 @@ foreach ($c in Get-ChildItem "$here\host" -Filter "test_*.c" | Sort-Object Name)
     $name = $c.BaseName
     if ($name -eq "test_blt_proto") {
         $tests += @{ name = $name; inc = $inc_blt; src = "`"$src_blt`""; args = "`"$out\frames.hex`"" }
+    } elseif ($name -eq "test_blt_live") {
+        $tests += @{ name = $name; inc = $inc_blt; src = (SrcsOf "blt_proto"); args = "" }
     } elseif ($name -like "test_bms*") {
         $tests += @{ name = $name; inc = $inc_bms; src = $src_bms; args = "" }
     } elseif ($name -eq "test_report") {

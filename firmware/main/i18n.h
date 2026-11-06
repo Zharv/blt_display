@@ -13,7 +13,7 @@ typedef enum {
     /* test state */
     S_ST_DISCHARGE, S_ST_DONE, S_ST_REST, S_ST_IDLE,
     /* tester card */
-    S_TESTER, S_SIMULATED, S_LIVE, S_CAPACITY, S_ENERGY, S_TIME, S_TEMP,
+    S_TESTER, S_SIMULATED, S_LIVE, S_USB_LINK, S_CAPACITY, S_ENERGY, S_TIME, S_TEMP,
     /* units */
     S_U_V, S_U_A, S_U_AH, S_U_WH, S_U_MV, S_U_MIN,
     /* bms card */

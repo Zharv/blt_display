@@ -731,7 +731,8 @@ void ui_online_update(const online_sample_t *s)
 {
     if (!s) return;
 
-    set_tag(s_t_tag, tr(s->tester_live ? S_LIVE : S_SIMULATED), s->tester_live ? C_GREEN : C_AMBER);
+    set_tag(s_t_tag, tr(s->tester_live ? S_LIVE : s->tester_usb ? S_USB_LINK : S_SIMULATED),
+            s->tester_live ? C_GREEN : s->tester_usb ? C_BLUE : C_AMBER);
     set_txt(s_t_v, "%.2f", s->voltage_v);
     set_txt(s_t_a, "%s%.1f", s->current_a < 0 ? "−" : "", fabsf(s->current_a));
     set_txt(s_t_ah, "%.2f %s", s->capacity_ah, tr(S_U_AH));

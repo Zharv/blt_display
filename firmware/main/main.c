@@ -34,6 +34,7 @@
 #include "hist.h"
 #include "snap.h"
 #include "bms_ble.h"
+#include "blt_usb.h"
 #include "netw.h"
 #include "print_job.h"
 #include "report.h"
@@ -83,6 +84,7 @@ static void sim_step(sim_state_t *s, float dt_s)
 static void sim_fill_sample(const sim_state_t *s, online_sample_t *o)
 {
     o->tester_live = false;
+    o->tester_usb = blt_usb_state(NULL, NULL) == BLT_USB_CONNECTED;
     o->state = s->done ? TS_DONE : TS_DISCHARGE;
     o->voltage_v = s->v;
     o->current_a = s->i;
@@ -119,11 +121,60 @@ static void sim_fill_sample(const sim_state_t *s, online_sample_t *o)
     ui_sample_finish_cells(o);
 }
 
+/* Live tester data (RI block), filled by blt_poll_task once reads are allowed */
+static blt_live_t s_live;
+static volatile int64_t s_live_us;
+static portMUX_TYPE s_live_mux = portMUX_INITIALIZER_UNLOCKED;
+
+static void blt_poll_task(void *arg)
+{
+    (void)arg;
+    int fails = 0;
+    for (;;) {
+        vTaskDelay(pdMS_TO_TICKS(900));          /* BltView polls every 900 ms */
+        if (!blt_usb_reads_allowed() || blt_usb_state(NULL, NULL) != BLT_USB_CONNECTED) continue;
+        blt_live_t l;
+        esp_err_t e = blt_usb_read_live(&l);
+        if (e != ESP_OK) {
+            if (++fails % 10 == 1) ESP_LOGW(TAG, "tester live read: %s", esp_err_to_name(e));
+            continue;
+        }
+        if (fails) ESP_LOGI(TAG, "tester live read OK after %d failures", fails);
+        fails = 0;
+        taskENTER_CRITICAL(&s_live_mux);
+        s_live = l;
+        s_live_us = esp_timer_get_time();
+        taskEXIT_CRITICAL(&s_live_mux);
+        static int n;
+        if (n++ % 20 == 0)
+            ESP_LOGI(TAG, "tester: %.1f V  dis %.1f A  chg %.1f A  %u Ah  t %u min  state %u (%s)",
+                     l.v_batt, l.i_discharge, l.i_charge, l.ah_discharged, l.t_discharge_min,
+                     l.state, blt_state_name_it(l.state));
+    }
+}
+
 /* Tester side is still simulated; the BMS side uses the real BLE BMS when it
  * has delivered a frame in the last 5 s. */
 static void fill_sample(online_sample_t *o)
 {
     sim_fill_sample(&s_sim, o);
+    if (s_live_us && esp_timer_get_time() - s_live_us < 5000000) {
+        blt_live_t l;
+        taskENTER_CRITICAL(&s_live_mux);
+        l = s_live;
+        taskEXIT_CRITICAL(&s_live_mux);
+        o->tester_live = true;
+        o->voltage_v = l.v_batt;
+        o->current_a = l.i_charge > 0.05f ? l.i_charge : -l.i_discharge;
+        o->capacity_ah = l.ah_discharged;
+        o->energy_wh = 0;                      /* not in the RI block */
+        bool chg = l.state == BLT_ST_CHARGE || l.state == BLT_ST_CHARGE_PAUSE;
+        o->elapsed_s = (uint32_t)(chg ? l.t_charge_min : l.t_discharge_min) * 60u;
+        o->temp_c = l.temp_c[0];
+        o->state = l.state == BLT_ST_DISCHARGE || l.state == BLT_ST_CHARGE ? TS_DISCHARGE :
+                   l.state == BLT_ST_DISCHARGE_PAUSE || l.state == BLT_ST_CHARGE_PAUSE ? TS_REST :
+                   l.state == BLT_ST_END ? TS_DONE : TS_IDLE;
+    }
     bms_data_t b;
     uint32_t age = 0;
     if (!bms_ble_get(&b, &age) || age > 5000) return;
@@ -464,6 +515,8 @@ void app_main(void)
     bsp_display_unlock();
 
     snap_start();
+    blt_usb_start();     /* tester on USB - passive until reads are allowed */
+    xTaskCreate(blt_poll_task, "blt_poll", 4096, NULL, 4, NULL);
 
     /* Wi-Fi via the C6 runs in its own task so the UI stays live if it stalls */
     xTaskCreate(netw_task, "netw", 6144, NULL, 5, NULL);

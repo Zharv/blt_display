@@ -20,6 +20,7 @@ static const char *const STR[S__COUNT][2] = {
     [S_TESTER]          = { "Тестер BLT", "BLT tester" },
     [S_SIMULATED]       = { "симуляція", "simulated" },
     [S_LIVE]            = { "наживо", "live" },
+    [S_USB_LINK]        = { "USB підключено · симуляція", "USB linked · simulated" },
     [S_CAPACITY]        = { "Ємність", "Capacity" },
     [S_ENERGY]          = { "Енергія", "Energy" },
     [S_TIME]            = { "Час", "Time" },

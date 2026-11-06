@@ -16,11 +16,15 @@ idf_component_register(
         "ui_common.c"
         "snap.c"
         "lv_mem_psram.c"
+        "blt_usb.c"
     INCLUDE_DIRS "."
     EMBED_FILES "fonts/Montserrat-Medium.ttf"
     REQUIRES
         esp32_p4_function_ev_board
         espressif__esp_lcd_touch
+        blt_proto
+        usb
+        espressif__usb_host_cdc_acm
         report
         print_ipp
         bms

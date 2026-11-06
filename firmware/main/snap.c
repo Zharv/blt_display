@@ -1,5 +1,6 @@
 #include "snap.h"
 #include "ui_frame.h"
+#include "blt_usb.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -107,6 +108,15 @@ static void snap_task(void *arg)
         else if (strncmp(line, "TAB ", 4) == 0) snap_nav(atoi(line + 4));
         else if (strncmp(line, "CHART ", 6) == 0) snap_chart(atoi(line + 6));
         else if (strncmp(line, "CELL ", 5) == 0) snap_cell(atoi(line + 5));
+        else if (strncmp(line, "BLTALLOW ", 9) == 0) blt_usb_allow_reads(atoi(line + 9) != 0);
+        else if (strncmp(line, "BLT ", 4) == 0) {        /* "BLT RD 000000 0010" - reads only */
+            char cmd[3] = { 0 };
+            unsigned long addr = 0, len = 0;
+            if (sscanf(line + 4, "%2s %lx %lx", cmd, &addr, &len) == 3) {
+                blt_cmd_t c;
+                if (blt_cmd_from_str(cmd, &c)) blt_usb_read(c, (uint32_t)addr, (uint16_t)len, NULL, NULL, 2000);
+            }
+        }
         else if (strcmp(line, "BMS") == 0) snap_bms_connect();
         else if (strcmp(line, "BMSOFF") == 0) snap_bms_disconnect();
 

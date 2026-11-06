@@ -14,4 +14,6 @@ dependencies:
     rules:
       - if: "target in [esp32p4]"
   espressif/mdns: "^1"
+  # BLT tester over USB (Microchip CDC-ACM, VID 04D8 PID 000A); P4 is the USB host
+  espressif/usb_host_cdc_acm: "^2"
   # board BSP + LCD/touch drivers live in ../components (auto-discovered).

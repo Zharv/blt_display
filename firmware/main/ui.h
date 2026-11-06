@@ -19,6 +19,7 @@ typedef enum { TS_IDLE = 0, TS_DISCHARGE, TS_REST, TS_DONE } test_state_t;
 typedef struct {
     /* tester */
     bool     tester_live;   /* false while the tester side is simulated */
+    bool     tester_usb;    /* tester enumerated on USB (link up, values not read yet) */
     uint8_t  state;         /* test_state_t */
     float    voltage_v;
     float    current_a;     /* negative = discharge */

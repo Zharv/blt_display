@@ -6,6 +6,8 @@
  * literal pixels; pixels little-endian), "\nSNAP-END\n", then returns to the
  * normal rate. tools/snap.py turns it into a PNG.
  * "TAB n" switches the tab (0..4), "CHART m" the OnLine chart mode.
+ * "BLTALLOW 1|0" allows/blocks tester read commands; "BLT RD 000000 0010"
+ * sends one read (RI/RD/RW/RB only, <= 64 B) and logs the raw response.
  */
 #pragma once
 
