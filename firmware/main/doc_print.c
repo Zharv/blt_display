@@ -141,6 +141,13 @@ static esp_err_t build_and_print(void)
     int d_end = live_bms ? s_x.imbalance_mv
               : log_d_end >= 0 ? log_d_end
               : sum_ok ? (int)sum.cell_max_mv - (int)sum.cell_min_mv : -1;
+    /* temperature at the start: the battery (BMS), else the room temperature
+     * typed on the Test tab, else not known (printed as 20 C) */
+    bool t_room = false;
+    if (!(s_x.temp_start > -100) && have_sum && sum.room_dc != INT16_MIN) {
+        s_x.temp_start = sum.room_dc / 10.0f;
+        t_room = true;
+    }
     bool t_known = s_x.temp_start > -100;
     float t_start = t_known ? s_x.temp_start : 20.0f;   /* not measured: 20 C */
     bool tmax_known = sum_ok && sum.temp_max_dc != INT16_MIN;
@@ -183,8 +190,8 @@ static esp_err_t build_and_print(void)
         if (d_end >= 0) snprintf(a2, sizeof a2, "%d", d_end);
         KVR("Розбаланс: початок / кінець", "%s / %s мВ", a1, a2);
     } else KVR("Розбаланс: початок / кінець", "немає даних BMS");
-    if (tmax_known) KV("Температура батареї", "%.0f → %.0f °C", t_start, t_max);
-    else KV("Температура батареї", "%.0f °C", t_start);
+    if (tmax_known) KV(t_room ? "Температура (приміщення → батарея)" : "Температура батареї", "%.0f → %.0f °C", t_start, t_max);
+    else KV(t_room ? "Температура в приміщенні" : "Температура батареї", "%.0f °C", t_start);
 
     /* conclusion */
     doc_stop_t stop;
@@ -206,7 +213,7 @@ static esp_err_t build_and_print(void)
     doc_facts_t facts = {
         .ah = ah, .rated_ah = rc->rated_ah, .cells = cells, .lfp = ch == CHEM_LFP,
         .v_before = t->n ? t->v[0] : 0, .v_before_loaded = t->n && t->i[0] > 2.0f,
-        .temp_known = t_known, .temp_start = t_start, .temp_max_known = tmax_known, .temp_max = t_max,
+        .temp_known = t_known, .temp_room = t_room, .temp_start = t_start, .temp_max_known = tmax_known, .temp_max = t_max,
         .d_start = d_start, .d_end = d_end, .low_cell = low_cell,
         .stop = stop, .v_end = t->n ? t->v[t->n - 1] : 0, .v_stop = blt_rec_stop_v(rc),
         .alarm_name = alarm_nm,
@@ -220,7 +227,7 @@ static esp_err_t build_and_print(void)
         .company = CO_NAME, .company_code = CO_CODE, .address = { CO_ADDR1, CO_ADDR2 },
         .signer_title = CO_SIGNER_TITLE, .signer_name = CO_SIGNER_NAME,
         .equipment = "Електронне навантаження BLT160",
-        .v_before = t->n ? t->v[0] : 0, .temp_start = s_x.temp_start,
+        .v_before = t->n ? t->v[0] : 0, .temp_start = s_x.temp_start, .temp_is_room = t_room,
         .discharge_a = rc->discharge_a, .capacity_ah = ah, .discharge_min = rc->t_dis_min,
         .in_progress = running,
         .battery_desc = bdesc,

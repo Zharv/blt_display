@@ -27,6 +27,7 @@ typedef struct {
     float v_before;            /* V at the start, 0 = unknown */
     bool  v_before_loaded;     /* that voltage was measured under load */
     bool  temp_known;          /* temp_start measured (else 20 C assumed) */
+    bool  temp_room;           /* temp_start is the room temperature typed in (no BMS) */
     float temp_start;
     bool  temp_max_known;
     float temp_max;

@@ -59,6 +59,11 @@ int main(void)
     CHECK(has(o, n, "на 5 %") && has(o, n, "близько 304 А·год"), "cool workshop estimate");
     CHECK(count(o, n, DOC_F_CAUSE) == 1, "temperature counted as a cause");
 
+    /* the same from the room temperature typed in (no BMS) */
+    f = good(); f.ah = 288; f.temp_start = 12; f.temp_room = true; f.temp_max_known = false;
+    n = doc_analyze(&f, v, sizeof v, o, DOC_FINDINGS_MAX);
+    CHECK(has(o, n, "Температура в приміщенні на початку 12") && count(o, n, DOC_F_CAUSE) == 1, "room temperature wording");
+
     /* same at full capacity: only a note */
     f = good(); f.temp_start = 12;
     n = doc_analyze(&f, v, sizeof v, o, DOC_FINDINGS_MAX);

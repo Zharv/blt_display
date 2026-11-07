@@ -37,6 +37,7 @@ typedef struct {
     char     serial[24];
     float    v_before;            /* <= 0: not known (left blank) */
     float    temp_start;          /* < -100: not known (printed as 20) */
+    bool     temp_is_room;        /* temp_start is the room temperature (no BMS) */
     int      discharge_a;
     float    capacity_ah;
     uint32_t discharge_min;

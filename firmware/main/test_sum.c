@@ -1,6 +1,8 @@
 #include "test_sum.h"
 
 #include <stdio.h>
+#include <limits.h>
+#include <stddef.h>
 #include <string.h>
 
 #include "nvs.h"
@@ -26,7 +28,14 @@ void test_sum_load(void)
             char k[8];
             snprintf(k, sizeof k, "s%02d", i);
             size_t n = sizeof s_slot[i];
-            if (nvs_get_blob(h, k, &s_slot[i], &n) != ESP_OK || n != sizeof s_slot[i]) memset(&s_slot[i], 0, sizeof s_slot[i]);
+            memset(&s_slot[i], 0, sizeof s_slot[i]);
+            s_slot[i].room_dc = INT16_MIN;
+            if (nvs_get_blob(h, k, &s_slot[i], &n) != ESP_OK || n < offsetof(test_sum_t, room_dc)) {
+                memset(&s_slot[i], 0, sizeof s_slot[i]);
+                s_slot[i].room_dc = INT16_MIN;
+            } else if (n < sizeof s_slot[i]) {
+                s_slot[i].room_dc = INT16_MIN;        /* written before the field existed */
+            }
         }
         nvs_close(h);
     }
@@ -39,7 +48,7 @@ bool test_sum_get(uint16_t test, test_sum_t *out)
     taskENTER_CRITICAL(&s_mux);
     *out = s_slot[test % TEST_SUM_SLOTS];
     taskEXIT_CRITICAL(&s_mux);
-    return out->test == test && out->cells;
+    return out->test == test && (out->cells || out->room_dc != INT16_MIN);
 }
 
 void test_sum_put(const test_sum_t *s)

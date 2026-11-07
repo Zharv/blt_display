@@ -312,6 +312,54 @@ typedef struct {
 } health_base_t;
 
 static health_base_t s_hb;
+
+/* room temperature typed on the Test tab, waiting for its test (NVS "health"/"room") */
+static int16_t s_room_dc = INT16_MIN;
+static bool s_room_loaded;
+
+static void room_load(void)
+{
+    if (s_room_loaded) return;
+    s_room_loaded = true;
+    nvs_handle_t h;
+    if (nvs_open("health", NVS_READONLY, &h) == ESP_OK) {
+        nvs_get_i16(h, "room", &s_room_dc);
+        nvs_close(h);
+    }
+}
+
+static void room_save(void)
+{
+    nvs_handle_t h;
+    if (nvs_open("health", NVS_READWRITE, &h) == ESP_OK) {
+        if (s_room_dc == INT16_MIN) nvs_erase_key(h, "room"); else nvs_set_i16(h, "room", s_room_dc);
+        nvs_commit(h);
+        nvs_close(h);
+    }
+}
+
+/* LVGL context (Test tab) */
+void room_temp_set(float c)
+{
+    room_load();
+    s_room_dc = (int16_t)lroundf(c * 10);
+    room_save();
+}
+
+static void room_temp_clear(void)
+{
+    s_room_dc = INT16_MIN;
+    room_save();
+}
+
+/* pending value (not yet given to a test); false if none */
+bool room_temp_pending(float *c)
+{
+    room_load();
+    if (s_room_dc == INT16_MIN) return false;
+    *c = s_room_dc / 10.0f;
+    return true;
+}
 static bool s_hb_loaded;
 static uint8_t s_chem;      /* chem_t, user setting */
 
@@ -370,6 +418,7 @@ void health_chem_set(uint8_t chem)
 static void health_tick(const online_sample_t *o)
 {
     health_load();
+    room_load();
     bool has_t, has_mos;
     float tbat = 0, tmos = 0;
     bms_temps(o, &has_t, &tbat, &has_mos, &tmos);
@@ -393,20 +442,30 @@ static void health_tick(const online_sample_t *o)
     /* what the panel sees of this test, for later (archive) protocols */
     static test_sum_t sum;
     static int64_t sum_saved_us;
-    if (o->tester_live && (o->state == TS_DISCHARGE || o->state == TS_REST) && o->bms_live && o->cell_count >= 2) {
-        if (sum.test != o->test_no || sum.cells == 0) {
+    if (o->tester_live && (o->state == TS_DISCHARGE || o->state == TS_REST)) {
+        if (sum.test != o->test_no) {
             if (!test_sum_get(o->test_no, &sum)) {
                 memset(&sum, 0, sizeof sum);
                 sum.test = o->test_no;
                 sum.temp0_dc = sum.temp_max_dc = INT16_MIN;
+                sum.room_dc = INT16_MIN;
             }
         }
+        /* room temperature typed on the Test tab goes to this test */
+        if (sum.room_dc == INT16_MIN && s_room_dc != INT16_MIN) {
+            sum.room_dc = s_room_dc;
+            room_temp_clear();
+            sum_saved_us = 0;                          /* save now */
+            ESP_LOGI(TAG, "room temperature %.1f C -> test %u", sum.room_dc / 10.0f, sum.test);
+        }
+        if (o->bms_live && o->cell_count >= 2) {
         sum.cells = o->cell_count;
         strlcpy(sum.bms, o->bms_name, sizeof sum.bms);
         sum.cell_min_mv = o->cell_min_mv;
         sum.cell_max_mv = o->cell_max_mv;
         if (o->imbalance_mv > sum.delta_max_mv && o->elapsed_s >= 60) sum.delta_max_mv = o->imbalance_mv;
         if (has_t && (sum.temp_max_dc == INT16_MIN || tbat * 10 > sum.temp_max_dc)) sum.temp_max_dc = (int16_t)(tbat * 10);
+        }
         if (s_hb.valid && s_hb.test == o->test_no) {
             sum.delta0_mv = s_hb.delta0_mv;
             sum.temp0_dc = s_hb.temp0_dc;
@@ -417,7 +476,7 @@ static void health_tick(const online_sample_t *o)
             sum_saved_us = now;
             test_sum_put(&sum);
         }
-    } else if (sum.cells && sum_saved_us) {             /* test over: final values */
+    } else if (sum.test && sum_saved_us) {              /* test over: final values */
         test_sum_put(&sum);
         sum_saved_us = 0;
     }
