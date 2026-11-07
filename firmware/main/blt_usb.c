@@ -3,13 +3,14 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "bsp/esp-bsp.h"
+#include "esp_intr_alloc.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "usb/cdc_acm_host.h"
 #include "usb/usb_host.h"
+#include "soc/usb_dwc_struct.h"
 
 static const char *TAG = "blt_usb";
 
@@ -27,6 +28,7 @@ static SemaphoreHandle_t s_txn;       /* one transaction at a time */
 static uint8_t s_rx[2 * BLT_MAX_PAYLOAD + 64];
 static volatile size_t s_rx_len;
 static volatile bool s_waiting;
+static bool s_fsls_api;               /* espressif/usb >= 1.6 latched FS/LS-only at install */
 static bool s_quiet;                  /* polling: raw frames only at debug level */
 
 static void log_bytes(const char *what, const uint8_t *d, size_t n)
@@ -94,6 +96,16 @@ static void on_new_dev(usb_device_handle_t usb_dev)
     }
 }
 
+/* The tester is a full-speed device (PIC18, EP0 = 8 B). On the P4's
+ * high-speed DWC core its enumeration failed at the config descriptor ~every
+ * time (EP0 transaction errors). The core has an "FS/LS only" mode (HCFG
+ * FSLSSupp) that IDF 5.5 never sets; set it before the port is powered so the
+ * port runs as a plain full-speed host. */
+static void force_fs_only(void)
+{
+    USB_DWC_HS.hcfg_reg.fslssupp = 1;
+}
+
 static void conn_task(void *arg)
 {
     (void)arg;
@@ -121,6 +133,7 @@ static void conn_task(void *arg)
                 misses = 0;
                 usb_host_lib_set_root_port_power(false);
                 vTaskDelay(pdMS_TO_TICKS(300));
+                if (!s_fsls_api) force_fs_only();
                 usb_host_lib_set_root_port_power(true);
             }
             continue;
@@ -132,12 +145,34 @@ static void conn_task(void *arg)
     }
 }
 
+static void usb_lib_task(void *arg)
+{
+    (void)arg;
+    for (;;) {
+        uint32_t flags;
+        usb_host_lib_handle_events(portMAX_DELAY, &flags);
+        if (flags & USB_HOST_LIB_EVENT_FLAGS_NO_CLIENTS) usb_host_device_free_all();
+    }
+}
+
+
 esp_err_t blt_usb_start(void)
 {
     s_done = xSemaphoreCreateBinary();
     s_txn = xSemaphoreCreateMutex();
-    esp_err_t e = bsp_usb_host_start(BSP_USB_HOST_POWER_MODE_USB_DEV, true);
+    /* Own install (not bsp_usb_host_start), HS controller ONLY (BIT0).
+     * Never enable the full-speed USB 1.1 controller (BIT1) on this board: its
+     * internal PHY sits on GPIO26/27 and GPIO27 is the LCD reset - the panel
+     * goes black. (usb_host fsls_only needs a newer IDF HAL than 5.5; the HS
+     * core gets the HCFG FS/LS-only bit instead, see force_fs_only.) */
+    usb_host_config_t hc = {
+        .skip_phy_setup = false,
+        .intr_flags = ESP_INTR_FLAG_LEVEL1,
+        .peripheral_map = BIT0,
+    };
+    esp_err_t e = usb_host_install(&hc);
     if (e != ESP_OK) { ESP_LOGE(TAG, "usb host: %s", esp_err_to_name(e)); return e; }
+    xTaskCreate(usb_lib_task, "usb_lib", 4096, NULL, 10, NULL);
     const cdc_acm_host_driver_config_t drv = {
         .driver_task_stack_size = 4096,
         .driver_task_priority = 9,
@@ -146,6 +181,15 @@ esp_err_t blt_usb_start(void)
     };
     e = cdc_acm_host_install(&drv);
     if (e != ESP_OK) { ESP_LOGE(TAG, "cdc install: %s", esp_err_to_name(e)); return e; }
+    if (!s_fsls_api) {
+        /* re-power the port in FS-only mode (see force_fs_only) */
+        usb_host_lib_set_root_port_power(false);
+        vTaskDelay(pdMS_TO_TICKS(100));
+        force_fs_only();
+        usb_host_lib_set_root_port_power(true);
+    }
+    ESP_LOGI(TAG, "HS core FS/LS-only: %s, hcfg.fslssupp=%d", s_fsls_api ? "usb_host fsls_only" : "HCFG bit",
+             (int)USB_DWC_HS.hcfg_reg.fslssupp);
     s_state = BLT_USB_WAITING;
     xTaskCreate(conn_task, "blt_usb", 4096, NULL, 5, NULL);
     ESP_LOGI(TAG, "waiting for the tester on USB (passive mode)");

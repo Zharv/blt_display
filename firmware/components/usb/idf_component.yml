@@ -1,0 +1,7 @@
+# Local copy of espressif/usb 1.6.0 (github.com/espressif/esp-usb, host/usb,
+# commit 630f1c4) with an enumeration patch for the BLT tester - see
+# src/enum.c "blt-esp-display patch". Overrides the ESP-IDF in-tree `usb`.
+version: "1.6.0"
+description: USB Host library (patched enumeration delay/retry)
+dependencies:
+  idf: ">=5.5"
