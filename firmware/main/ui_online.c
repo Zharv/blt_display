@@ -359,6 +359,21 @@ static void fill_none(pser_t *s)
     for (int k = 0; k < CHART_PTS; k++) ps_set(s, k, LV_CHART_POINT_NONE);
 }
 
+/* The plot has CHART_PTS slots over the time axis [s_ax0, s_ax1]. Each slot
+ * shows the AVERAGE of every recorded sample whose time falls in it (not "every
+ * n-th sample", which picked different samples on each refresh and made the
+ * noisy curve jump). Empty slots are gaps. Returns the first sample index of
+ * slot k (slots are walked in order, so pass the previous end). */
+static int slot_range(int k, int from, int n, int *to)
+{
+    uint64_t span = s_ax1 > s_ax0 ? s_ax1 - s_ax0 : 1;
+    uint32_t t_hi = s_ax0 + (uint32_t)(span * (uint64_t)(k + 1) / CHART_PTS);
+    int j = from;
+    while (j < n && (hist_at(j)->t_s < t_hi || k == CHART_PTS - 1)) j++;
+    *to = j;
+    return from;
+}
+
 void ui_online_chart_refresh(void)
 {
     if (!s_chart || lv_obj_get_screen(s_chart) != lv_screen_active()) return;
@@ -417,13 +432,25 @@ void ui_online_chart_refresh(void)
         scale_range(s_sc_l, vlo, vhi, (vhi - vlo) / vst + 1);
         scale_range(s_sc_r, 0, ihi, ihi / ist + 1);
 
-        for (int k = 0; k < pts; k++) {
-            const hist_pt_t *p = hist_at((int)((long)k * (n - 1) / (pts - 1)));
-            s_pt_t[k] = p->t_s;
-            ps_set(s_ser_ut, k, (int32_t)(p->v_t * 1000));
-            ps_set(s_ser_ub, k,
-                                     p->v_b > 0 ? (int32_t)(p->v_b * 1000) : LV_CHART_POINT_NONE);
-            ps_set(s_ser_i, k, (int32_t)(fabsf(p->i_t) * 10));
+        ps_points(CHART_PTS);
+        for (int k = 0, j = 0; k < CHART_PTS; k++) {
+            int to, from = slot_range(k, j, n, &to);
+            j = to;
+            float vt = 0, vb = 0, ia = 0, ts = 0;
+            int c = 0, cb = 0;
+            for (int i = from; i < to; i++) {
+                const hist_pt_t *p = hist_at(i);
+                vt += p->v_t; ia += fabsf(p->i_t); ts += p->t_s; c++;
+                if (p->v_b > 0) { vb += p->v_b; cb++; }
+            }
+            if (!c) {
+                ps_set(s_ser_ut, k, PT_NONE); ps_set(s_ser_ub, k, PT_NONE); ps_set(s_ser_i, k, PT_NONE);
+                continue;
+            }
+            s_pt_t[k] = (uint32_t)(ts / c);
+            ps_set(s_ser_ut, k, (int32_t)(vt / c * 1000));
+            ps_set(s_ser_ub, k, cb ? (int32_t)(vb / cb * 1000) : PT_NONE);
+            ps_set(s_ser_i, k, (int32_t)(ia / c * 10));
         }
         char l1[48], l2[48], l3[48];
         snprintf(l1, sizeof l1, "%s, %s", tr(S_CH_U_TESTER), tr(S_U_V));
@@ -483,23 +510,30 @@ void ui_online_chart_refresh(void)
             int use = c < ncell;
             if (s_cell_shown[c] != use) { ps_hide(s_ser_c[c], !use); s_cell_shown[c] = (int8_t)use; }
         }
-        for (int k = 0; k < pts; k++) {
-            const hist_pt_t *p = hist_at((int)((long)k * (n - 1) / (pts - 1)));
-            s_pt_t[k] = p->t_s;
-            float mean = 0, lo = 1e9f, hi = -1e9f;
-            for (int c = 0; c < p->n; c++) mean += p->cell[c];
-            if (p->n) mean /= p->n;
-            for (int c = 0; c < ncell; c++) {
-                if (c < p->n) {
-                    float d = p->cell[c] - mean;
-                    lo = fminf(lo, d); hi = fmaxf(hi, d);
-                    ps_set(s_ser_c[c], k, (int32_t)(d * 10));
-                } else {
-                    ps_set(s_ser_c[c], k, LV_CHART_POINT_NONE);
-                }
+        ps_points(CHART_PTS);
+        for (int k = 0, j = 0; k < CHART_PTS; k++) {
+            int to, from = slot_range(k, j, n, &to);
+            j = to;
+            float dev[UI_MAX_CELLS] = { 0 }, ts = 0;
+            int cnt = 0;
+            for (int i = from; i < to; i++) {
+                const hist_pt_t *p = hist_at(i);
+                if (p->n < 2 || p->n < ncell) continue;     /* sample without full cell data */
+                float mean = 0;
+                for (int c = 0; c < p->n; c++) mean += p->cell[c];
+                mean /= p->n;
+                for (int c = 0; c < ncell; c++) dev[c] += p->cell[c] - mean;
+                ts += p->t_s;
+                cnt++;
             }
-            ps_set(s_ser_d, k,
-                                     p->n >= 2 ? (int32_t)((hi - lo) * 10) : LV_CHART_POINT_NONE);
+            if (!cnt) {
+                for (int c = 0; c < ncell; c++) ps_set(s_ser_c[c], k, PT_NONE);
+                ps_set(s_ser_d, k, PT_NONE);
+                continue;
+            }
+            s_pt_t[k] = (uint32_t)(ts / cnt);
+            for (int c = 0; c < ncell; c++) ps_set(s_ser_c[c], k, (int32_t)(dev[c] / cnt * 10));
+            ps_set(s_ser_d, k, PT_NONE);
         }
         char l1[64], l3[16];
         snprintf(l1, sizeof l1, tr(S_CH_DELTA_NOW), dnow, (int)lroundf(dmax));

@@ -257,6 +257,7 @@ static void tick_cb(lv_timer_t *t)
         /* fill in the Ah / seconds between whole-unit tester updates */
         static int last_ah = -1, last_min = -1;
         static int64_t min_us;
+        static bool t_synced;      /* seconds known only after a minute change */
         int ah_int = (int)(o.capacity_ah - s_ah_extra + 0.5f);
         int min_int = (int)((o.elapsed_s - s_sec_extra) / 60u);
         int64_t now = esp_timer_get_time();
@@ -265,11 +266,19 @@ static void tick_cb(lv_timer_t *t)
             s_ah_extra += -o.current_a * (TICK_MS / 1000.0f) / 3600.0f;
             if (s_ah_extra > 0.99f) s_ah_extra = 0.99f;
         }
-        if (min_int != last_min) { last_min = min_int; min_us = now; s_sec_extra = 0; }
+        if (min_int != last_min) {
+            t_synced = last_min >= 0;          /* first value seen may be mid-minute */
+            last_min = min_int; min_us = now; s_sec_extra = 0;
+        }
         else if (o.state == TS_DISCHARGE) {
             int64_t sec = (now - min_us) / 1000000;
             s_sec_extra = (uint32_t)(sec > 59 ? 59 : sec);
         }
+        /* o was filled with the previous fractions: refresh it, otherwise the
+         * sample at each new minute is stamped ~1 min late and the curve
+         * zig-zags back in time */
+        o.capacity_ah = (float)ah_int + s_ah_extra;
+        o.elapsed_s = (uint32_t)min_int * 60u + s_sec_extra;
         bool running = o.state == TS_DISCHARGE || o.state == TS_REST;
         bool was_running = last_tstate == TS_DISCHARGE || last_tstate == TS_REST;
         if (running && !was_running && o.elapsed_s < 180) {   /* a new test started */
@@ -278,7 +287,7 @@ static void tick_cb(lv_timer_t *t)
         }
         if (o.state == TS_DISCHARGE && o.current_a < 0)
             s_live_wh += o.voltage_v * -o.current_a * (TICK_MS / 1000.0f) / 3600.0f;
-        if (running) hist_add(&o);
+        if (running && t_synced) hist_add(&o);
 
         /* BMS of the running test: re-join it after a restart, forget it when
          * the test is over (the next battery has its own BMS) */
