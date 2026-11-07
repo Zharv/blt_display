@@ -1,5 +1,6 @@
 #include "bms_ble.h"
 #include "bms_jk.h"
+#include "bms_daly_d2.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -25,6 +26,9 @@ static const char *TAG = "bms_ble";
 
 #define JK_SVC_UUID   0xFFE0
 #define JK_CHR_UUID   0xFFE1
+#define DALY_SVC_UUID 0xFFF0
+#define DALY_NTF_UUID 0xFFF1
+#define DALY_WR_UUID  0xFFF2
 #define CCCD_UUID     0x2902
 #define NVS_NS        "bms"
 
@@ -35,6 +39,7 @@ static volatile bool s_synced;
 
 /* target + connection */
 static bms_ble_dev_t s_target;
+static uint8_t s_kind;                    /* kind of the connected/target BMS */
 static volatile bool s_have_target;
 static volatile uint16_t s_conn = BLE_HS_CONN_HANDLE_NONE;
 /* Some JK units expose TWO characteristics with UUID 0xFFE1 at different
@@ -181,8 +186,7 @@ static void jk_feed(const uint8_t *d, size_t n)
             char hex[64];
             size_t o = 0;
             for (size_t i = 0; i < n && o + 3 < sizeof hex; i++) o += snprintf(hex + o, sizeof hex - o, "%02x ", d[i]);
-            ESP_LOGD(TAG, "small notify (%u B): %s", (unsigned)n, hex);   /* JK: "AT
-" pings */
+            ESP_LOGD(TAG, "small notify (%u B): %s", (unsigned)n, hex);   /* JK: AT<CR><LF> pings */
         }
         return;
     }
@@ -195,12 +199,85 @@ static void jk_feed(const uint8_t *d, size_t n)
     }
 }
 
+/* 16-bit UUID of u: either a 16-bit UUID, or a 128-bit one on the Bluetooth
+ * base (0000xxxx-0000-1000-8000-00805F9B34FB) - Daly lists FFF1/FFF2 that way. */
+static uint16_t uuid16_of(const ble_uuid_t *u)
+{
+    if (u->type == BLE_UUID_TYPE_16) return ble_uuid_u16(u);
+    if (u->type == BLE_UUID_TYPE_128) {
+        static const uint8_t base[12] = { 0xFB, 0x34, 0x9B, 0x5F, 0x80, 0x00, 0x00, 0x80, 0x00, 0x10, 0x00, 0x00 };
+        const uint8_t *v = ((const ble_uuid128_t *)u)->value;
+        if (memcmp(v, base, 12) == 0 && v[14] == 0 && v[15] == 0) return (uint16_t)(v[12] | (v[13] << 8));
+    }
+    return 0;
+}
+
+/* ---------------------------------------------------------- Daly frames */
+
+static void daly_request_status(void)
+{
+    if (s_conn == BLE_HS_CONN_HANDLE_NONE || !s_write_handle) return;
+    uint8_t f[8];
+    daly_d2_build_read(f, sizeof f, 0x0000, DALY_D2_STATUS_REGS);
+    int rc = s_write_with_rsp
+        ? ble_gattc_write_flat(s_conn, s_write_handle, f, sizeof f, NULL, NULL)
+        : ble_gattc_write_no_rsp_flat(s_conn, s_write_handle, f, sizeof f);
+    if (rc) ESP_LOGW(TAG, "daly request rc=%d", rc);
+}
+
+/* Responses may be split over several notifications (small MTU): collect from
+ * the 0xD2 start byte until the length in byte 2 is complete. */
+static void daly_feed(const uint8_t *d, size_t n)
+{
+    s_ntf++;
+    s_ntf_bytes += n;
+    if (s_rx_len == 0 && (n == 0 || d[0] != DALY_D2_START)) { s_ntf_dropped++; return; }
+    if (s_rx_len + n > sizeof s_rx) { s_rx_len = 0; return; }
+    memcpy(s_rx + s_rx_len, d, n);
+    s_rx_len += n;
+    size_t want = daly_d2_frame_len(s_rx, s_rx_len);
+    if (s_rx_len >= 3 && !want) { s_rx_len = 0; return; }        /* not a frame we know */
+    if (!want || s_rx_len < want) return;
+
+    bms_data_t b;
+    daly_d2_err_t e = daly_d2_parse_status(s_rx, want, &b);
+    s_rx_len = 0;
+    if (e != DALY_D2_OK) {
+        ESP_LOGW(TAG, "daly frame (%u B): error %d", (unsigned)want, e);
+        return;
+    }
+    s_ntf = s_ntf_bytes = s_ntf_dropped = 0;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    s_data = b;
+    s_data_us = esp_timer_get_time();
+    s_frames++;
+    uint32_t nf = s_frames;
+    xSemaphoreGive(s_lock);
+    s_state = BMS_BLE_STREAMING;
+    if (nf == 1 || nf % 60 == 0)
+        ESP_LOGI(TAG, "Daly: %u cells, %.1f V, %.1f A, SOC %u%%, d=%u mV, %u temps (frame %lu)",
+                 b.cell_count, b.pack_mv / 1000.0, b.pack_ma / 1000.0, b.soc_pct, b.imbalance_mv,
+                 b.temp_count, (unsigned long)nf);
+}
+
 /* --------------------------------------------------------- GATT set-up */
 
 static void kick_cb(void *arg)
 {
     (void)arg;
     if (s_conn == BLE_HS_CONN_HANDLE_NONE) return;
+    if (s_kind == BMS_KIND_DALY) {             /* Daly answers each request: poll */
+        int64_t last = s_data_us > s_link_us ? s_data_us : s_link_us;
+        if (esp_timer_get_time() - last > 15000000) {
+            ESP_LOGW(TAG, "Daly: no data for 15 s - reconnecting");
+            esp_timer_stop(s_kick_t);
+            ble_gap_terminate(s_conn, BLE_ERR_REM_USER_CONN_TERM);
+            return;
+        }
+        s_rx_len = 0;                         /* drop a half frame from the last request */
+        daly_request_status();
+        return;
+    }
     /* JK streams cell info after 0x96; re-request once if it went quiet (every
      * command makes the JK beep), and after 15 s of silence drop the link - the
      * disconnect handler reconnects. */
@@ -234,16 +311,22 @@ static int cccd_written(uint16_t conn, const struct ble_gatt_error *err,
         s_state = BMS_BLE_ERROR;
         return 0;
     }
-    ESP_LOGI(TAG, "notifications on - requesting device + cell info");
     s_state = BMS_BLE_CONNECTED;
     s_link_us = esp_timer_get_time();
     s_kicked = false;
     s_started = false;
     s_small_logged = 0;
     s_ntf = s_ntf_bytes = s_ntf_dropped = 0;
-    send_cmd(JK_CMD_DEVINFO);
     esp_timer_stop(s_kick_t);
-    esp_timer_start_periodic(s_kick_t, 1500 * 1000);
+    if (s_kind == BMS_KIND_DALY) {
+        ESP_LOGI(TAG, "notifications on - polling Daly status every 1 s");
+        daly_request_status();
+        esp_timer_start_periodic(s_kick_t, 1000 * 1000);
+    } else {
+        ESP_LOGI(TAG, "notifications on - requesting device + cell info");
+        send_cmd(JK_CMD_DEVINFO);
+        esp_timer_start_periodic(s_kick_t, 1500 * 1000);
+    }
     return 0;
 }
 
@@ -274,7 +357,18 @@ static int on_chr(uint16_t conn, const struct ble_gatt_error *err,
 {
     if (err->status == 0) {
         uint8_t p = chr->properties;
-        ESP_LOGI(TAG, "FFE1 @0x%04x props 0x%02x", chr->val_handle, p);
+        uint16_t u = uuid16_of(&chr->uuid.u);
+        ESP_LOGI(TAG, "chr %04X @0x%04x props 0x%02x", u, chr->val_handle, p);
+        if (s_kind == BMS_KIND_DALY) {          /* FFF1 notifies, FFF2 takes requests */
+            if (u == DALY_NTF_UUID && (p & (BLE_GATT_CHR_PROP_NOTIFY | BLE_GATT_CHR_PROP_INDICATE)))
+                s_notify_handle = chr->val_handle;
+            if (u == DALY_WR_UUID && (p & (BLE_GATT_CHR_PROP_WRITE_NO_RSP | BLE_GATT_CHR_PROP_WRITE))) {
+                s_write_handle = chr->val_handle;
+                s_write_with_rsp = !(p & BLE_GATT_CHR_PROP_WRITE_NO_RSP);
+            }
+            return 0;
+        }
+        if (u != JK_CHR_UUID) return 0;
         if ((p & (BLE_GATT_CHR_PROP_NOTIFY | BLE_GATT_CHR_PROP_INDICATE)) && !s_notify_handle)
             s_notify_handle = chr->val_handle;
         if (p & BLE_GATT_CHR_PROP_WRITE_NO_RSP) {
@@ -290,12 +384,12 @@ static int on_chr(uint16_t conn, const struct ble_gatt_error *err,
         /* single-characteristic units: one handle does both jobs */
         if (!s_notify_handle) s_notify_handle = s_write_handle;
         if (!s_write_handle) { s_write_handle = s_notify_handle; s_write_with_rsp = false; }
-        ESP_LOGI(TAG, "JK notify @0x%04x, write @0x%04x (%s)", s_notify_handle, s_write_handle,
+        ESP_LOGI(TAG, "%s notify @0x%04x, write @0x%04x (%s)", bms_kind_str(s_kind), s_notify_handle, s_write_handle,
                  s_write_with_rsp ? "with response" : "no response");
         int rc = ble_gattc_disc_all_dscs(conn, s_notify_handle, s_svc_end, on_dsc, NULL);
         if (rc) enable_notify(conn);
     } else {
-        ESP_LOGW(TAG, "JK characteristic 0xFFE1 not found (%d)", err->status);
+        ESP_LOGW(TAG, "%s characteristics not found (%d)", bms_kind_str(s_kind), err->status);
         s_state = BMS_BLE_ERROR;
         ble_gap_terminate(conn, BLE_ERR_REM_USER_CONN_TERM);
     }
@@ -311,10 +405,13 @@ static int on_svc(uint16_t conn, const struct ble_gatt_error *err,
         return 0;
     }
     if (err->status == BLE_HS_EDONE && s_svc_start) {
-        ble_gattc_disc_chrs_by_uuid(conn, s_svc_start, s_svc_end,
-                                    BLE_UUID16_DECLARE(JK_CHR_UUID), on_chr, NULL);
+        if (s_kind == BMS_KIND_UNKNOWN) s_kind = (uint8_t)(intptr_t)arg;
+        ble_gattc_disc_all_chrs(conn, s_svc_start, s_svc_end, on_chr, NULL);
+    } else if ((intptr_t)arg == BMS_KIND_JK && s_kind == BMS_KIND_UNKNOWN) {
+        ESP_LOGI(TAG, "no JK service - trying Daly 0xFFF0");
+        ble_gattc_disc_svc_by_uuid(conn, BLE_UUID16_DECLARE(DALY_SVC_UUID), on_svc, (void *)(intptr_t)BMS_KIND_DALY);
     } else {
-        ESP_LOGW(TAG, "JK service 0xFFE0 not found (%d) - not a JK BMS?", err->status);
+        ESP_LOGW(TAG, "BMS service not found (%d) - unsupported BMS?", err->status);
         s_state = BMS_BLE_ERROR;
         ble_gap_terminate(conn, BLE_ERR_REM_USER_CONN_TERM);
     }
@@ -377,16 +474,21 @@ static void scan_add(const struct ble_gap_disc_desc *d)
             memcpy(e->name, f.name, n);
             e->name[n] = '\0';
         }
-        for (int k = 0; k < f.num_uuids16; k++)
-            if (ble_uuid_u16(&f.uuids16[k].u) == JK_SVC_UUID) e->is_jk = true;
+        for (int k = 0; k < f.num_uuids16; k++) {
+            uint16_t u = ble_uuid_u16(&f.uuids16[k].u);
+            if (u == JK_SVC_UUID) e->kind = BMS_KIND_JK;
+            else if (u == DALY_SVC_UUID && e->kind == BMS_KIND_UNKNOWN) e->kind = BMS_KIND_DALY;
+        }
     }
-    if (strncasecmp(e->name, "JK", 2) == 0) e->is_jk = true;
+    if (strncasecmp(e->name, "JK", 2) == 0) e->kind = BMS_KIND_JK;
+    else if (strncasecmp(e->name, "DL-", 3) == 0 || strncasecmp(e->name, "DALY", 4) == 0) e->kind = BMS_KIND_DALY;
 }
 
 static int dev_cmp(const void *x, const void *y)
 {
     const bms_ble_dev_t *a = x, *b = y;
-    if (a->is_jk != b->is_jk) return a->is_jk ? -1 : 1;
+    bool ka = a->kind != BMS_KIND_UNKNOWN, kb = b->kind != BMS_KIND_UNKNOWN;
+    if (ka != kb) return ka ? -1 : 1;           /* recognised BMS first */
     return b->rssi - a->rssi;
 }
 
@@ -416,10 +518,10 @@ int bms_ble_scan(bms_ble_dev_t *out, int max, uint32_t ms)
     s_scan_out = NULL;
     if (s_state == BMS_BLE_SCANNING) s_state = BMS_BLE_IDLE;
 
-    /* keep named or JK-looking devices only */
+    /* keep named or recognised devices only */
     int k = 0;
     for (int i = 0; i < n; i++)
-        if (out[i].name[0] || out[i].is_jk) out[k++] = out[i];
+        if (out[i].name[0] || out[i].kind != BMS_KIND_UNKNOWN) out[k++] = out[i];
     qsort(out, k, sizeof out[0], dev_cmp);
     ESP_LOGI(TAG, "scan: %d devices (%d listed)", n, k);
     return k;
@@ -448,7 +550,11 @@ static int gap_event(struct ble_gap_event *ev, void *arg)
             s_variant_hint = -1;
             ESP_LOGI(TAG, "connected");
             ble_gattc_exchange_mtu(s_conn, on_mtu, NULL);
-            ble_gattc_disc_svc_by_uuid(s_conn, BLE_UUID16_DECLARE(JK_SVC_UUID), on_svc, NULL);
+            s_kind = s_target.kind;
+            if (s_kind == BMS_KIND_DALY)
+                ble_gattc_disc_svc_by_uuid(s_conn, BLE_UUID16_DECLARE(DALY_SVC_UUID), on_svc, (void *)(intptr_t)BMS_KIND_DALY);
+            else
+                ble_gattc_disc_svc_by_uuid(s_conn, BLE_UUID16_DECLARE(JK_SVC_UUID), on_svc, (void *)(intptr_t)BMS_KIND_JK);
         } else {
             ESP_LOGW(TAG, "connect failed: %d", ev->connect.status);
             s_conn = BLE_HS_CONN_HANDLE_NONE;
@@ -475,7 +581,8 @@ static int gap_event(struct ble_gap_event *ev, void *arg)
         uint16_t len = OS_MBUF_PKTLEN(ev->notify_rx.om);
         if (len > sizeof buf) len = sizeof buf;
         os_mbuf_copydata(ev->notify_rx.om, 0, len, buf);
-        jk_feed(buf, len);
+        if (s_kind == BMS_KIND_DALY) daly_feed(buf, len);
+        else jk_feed(buf, len);
         return 0;
     }
 
@@ -640,3 +747,8 @@ const char *bms_ble_state_str(bms_ble_state_t s)
     return "?";
 }
 
+
+const char *bms_kind_str(uint8_t kind)
+{
+    return kind == BMS_KIND_JK ? "JK" : kind == BMS_KIND_DALY ? "Daly" : "";
+}

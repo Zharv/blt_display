@@ -1,7 +1,8 @@
 /*
  * BLE link to a battery BMS (NimBLE central on the P4; the radio is the C6,
- * reached over ESP-Hosted HCI). JK (Jikong) is implemented; JBD/Daly use the
- * same scan/connect plumbing later.
+ * reached over ESP-Hosted HCI). JK (Jikong, service 0xFFE0, streams after one
+ * request) and Daly (service 0xFFF0, "D2" Modbus protocol, polled every second)
+ * are implemented; the kind is detected from the advertisement.
  *
  * Threading: scan/connect are called from UI/worker tasks; results and data
  * snapshots are copied out under a lock, so callers never touch NimBLE state.
@@ -19,13 +20,18 @@
 extern "C" {
 #endif
 
+typedef enum { BMS_KIND_UNKNOWN = 0, BMS_KIND_JK, BMS_KIND_DALY } bms_kind_t;
+
 typedef struct {
     char    name[32];
     uint8_t addr[6];       /* little-endian, as NimBLE stores it */
     uint8_t addr_type;
     int8_t  rssi;
-    bool    is_jk;         /* advertises service 0xFFE0 or a JK-like name */
+    uint8_t kind;          /* bms_kind_t: from the advertised service / name */
 } bms_ble_dev_t;
+
+/* "JK", "Daly" or "" */
+const char *bms_kind_str(uint8_t kind);
 
 typedef enum {
     BMS_BLE_OFF = 0,       /* stack not up (yet) */

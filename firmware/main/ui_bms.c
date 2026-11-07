@@ -75,9 +75,11 @@ static void poll_cb(lv_timer_t *t)
         lv_obj_clean(s_list);
         for (int i = 0; i < n; i++) {
             char line[80];
-            snprintf(line, sizeof line, "%s%.30s      %d dBm", s_devs[i].is_jk ? "[JK]  " : "",
+            char tag[12] = "";
+            if (s_devs[i].kind) snprintf(tag, sizeof tag, "[%s]  ", bms_kind_str(s_devs[i].kind));
+            snprintf(line, sizeof line, "%s%.30s      %d dBm", tag,
                      s_devs[i].name[0] ? s_devs[i].name : "?", s_devs[i].rssi);
-            ui_list_item(s_list, LV_SYMBOL_BLUETOOTH, line, s_devs[i].is_jk ? C_GREEN : C_TXT,
+            ui_list_item(s_list, LV_SYMBOL_BLUETOOTH, line, s_devs[i].kind ? C_GREEN : C_TXT,
                          dev_click_cb, (void *)(intptr_t)i);
         }
         if (n) lv_label_set_text_fmt(s_status, tr(S_BMS_FOUND), n);

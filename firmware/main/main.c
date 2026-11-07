@@ -406,14 +406,20 @@ void snap_bms_connect(void)
 {
     bms_ble_dev_t devs[12];
     int n = bms_ble_scan(devs, 12, 5000);
+    int pick = -1;
     for (int i = 0; i < n; i++) {
-        if (devs[i].is_jk) {
+        ESP_LOGI(TAG, "console: %-5s %-24s %d dBm", bms_kind_str(devs[i].kind), devs[i].name, devs[i].rssi);
+        if (devs[i].kind == BMS_KIND_DALY && (pick < 0 || devs[pick].kind != BMS_KIND_DALY)) pick = i;
+        else if (devs[i].kind != BMS_KIND_UNKNOWN && pick < 0) pick = i;
+    }
+    for (int i = (pick < 0 ? n : pick); i < n; i++) {   /* Daly preferred, else first JK */
+        if (devs[i].kind != BMS_KIND_UNKNOWN) {
             ESP_LOGI(TAG, "console: connecting to %s", devs[i].name);
             bms_ble_connect(&devs[i]);
             return;
         }
     }
-    ESP_LOGW(TAG, "console: no JK found (%d devices)", n);
+    ESP_LOGW(TAG, "console: no JK/Daly found (%d devices)", n);
 }
 
 void snap_bms_disconnect(void) { bms_ble_disconnect(); }

@@ -1,4 +1,4 @@
-﻿#include "i18n.h"
+#include "i18n.h"
 
 #include "nvs.h"
 
@@ -91,7 +91,7 @@ static const char *const STR[S__COUNT][2] = {
     [S_PRN_DIRECT]      = { "У мережі Wi-Fi Direct (DIRECT-…) принтером автоматично стає точка доступу.", "On a Wi-Fi Direct network (DIRECT-…) the access point is used as the printer." },
 
     [S_BMS_TITLE]       = { "BMS по Bluetooth", "BMS over Bluetooth" },
-    [S_BMS_HINT]        = { "Натисніть «Пошук» і виберіть BMS (JK — зверху списку)", "Tap Scan and pick the BMS (JK units listed first)" },
+    [S_BMS_HINT]        = { "Натисніть «Пошук» і виберіть BMS (розпізнані JK і Daly — зверху)", "Tap Scan and pick the BMS (recognised JK and Daly listed first)" },
     [S_BMS_SCANNING]    = { "пошук 6 с…", "scanning for 6 s…" },
     [S_BMS_FOUND]       = { "знайдено: %d — торкнись своєї BMS", "found %d - tap your BMS" },
     [S_BMS_NOTHING]     = { "нічого не знайдено — BMS не спить?", "nothing found - is the BMS awake?" },
