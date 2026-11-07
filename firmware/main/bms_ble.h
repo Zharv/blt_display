@@ -53,8 +53,15 @@ int bms_ble_scan(bms_ble_dev_t *out, int max, uint32_t ms);
 /* Connect to dev for this session (re-connects if the link drops). Returns at once. */
 esp_err_t bms_ble_connect(const bms_ble_dev_t *dev);
 
-/* Drop the link and end the session (no more re-connects). */
+/* Drop the link and end the session (no more re-connects); forgets the BMS. */
 void bms_ble_disconnect(void);
+
+/* Re-join the BMS remembered from the last connect (call only while the
+ * tester reports a running test). Returns true if a connect was started. */
+bool bms_ble_resume_last(void);
+
+/* Forget the remembered BMS (end of test). */
+void bms_ble_forget_last(void);
 
 /* Current state; name (may be NULL) gets the connected/target device name. */
 bms_ble_state_t bms_ble_state(char *name, size_t name_len);

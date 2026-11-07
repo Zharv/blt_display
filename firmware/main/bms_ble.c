@@ -81,6 +81,26 @@ static void erase_legacy_target(void)
     nvs_close(h);
 }
 
+/* The BMS of the running test is remembered ("bms"/"last") so that after a
+ * restart it can be re-joined - but only while the tester reports a running
+ * test (main.c decides). "Disconnect" and the end of the test forget it. */
+static void save_last(const bms_ble_dev_t *d)
+{
+    nvs_handle_t h;
+    if (nvs_open(NVS_NS, NVS_READWRITE, &h) != ESP_OK) return;
+    nvs_set_blob(h, "last", d, sizeof *d);
+    nvs_commit(h);
+    nvs_close(h);
+}
+
+static void clear_last(void)
+{
+    nvs_handle_t h;
+    if (nvs_open(NVS_NS, NVS_READWRITE, &h) != ESP_OK) return;
+    if (nvs_erase_key(h, "last") == ESP_OK) nvs_commit(h);
+    nvs_close(h);
+}
+
 /* ------------------------------------------------------------- JK frames */
 
 static void send_cmd(uint8_t cmd)
@@ -687,6 +707,7 @@ esp_err_t bms_ble_connect(const bms_ble_dev_t *dev)
     if (!s_synced) return ESP_ERR_INVALID_STATE;
     s_target = *dev;
     s_have_target = true;
+    save_last(dev);
     if (s_conn != BLE_HS_CONN_HANDLE_NONE) {
         ble_gap_terminate(s_conn, BLE_ERR_REM_USER_CONN_TERM);  /* reconnects on disconnect */
     } else {
@@ -699,6 +720,7 @@ esp_err_t bms_ble_connect(const bms_ble_dev_t *dev)
 void bms_ble_disconnect(void)
 {
     s_have_target = false;
+    clear_last();
     esp_timer_stop(s_reconnect_t);
     esp_timer_stop(s_kick_t);
     int rc;
@@ -751,4 +773,29 @@ const char *bms_ble_state_str(bms_ble_state_t s)
 const char *bms_kind_str(uint8_t kind)
 {
     return kind == BMS_KIND_JK ? "JK" : kind == BMS_KIND_DALY ? "Daly" : "";
+}
+
+bool bms_ble_resume_last(void)
+{
+    if (!s_synced || s_have_target || s_conn != BLE_HS_CONN_HANDLE_NONE) return false;
+    nvs_handle_t h;
+    bms_ble_dev_t d;
+    size_t len = sizeof d;
+    bool ok = false;
+    if (nvs_open(NVS_NS, NVS_READONLY, &h) == ESP_OK) {
+        ok = nvs_get_blob(h, "last", &d, &len) == ESP_OK && len == sizeof d;
+        nvs_close(h);
+    }
+    if (!ok) return false;
+    d.name[sizeof d.name - 1] = '\0';
+    ESP_LOGI(TAG, "test running: re-joining the BMS of this test (%s)", d.name);
+    s_target = d;
+    s_have_target = true;
+    start_connect();
+    return true;
+}
+
+void bms_ble_forget_last(void)
+{
+    clear_last();
 }

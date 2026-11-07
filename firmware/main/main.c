@@ -51,6 +51,11 @@ static float         s_rep_v[HIST_MAX], s_rep_i[HIST_MAX], s_rep_d[HIST_MAX];
 static char          s_rep_date[32], s_rep_batt[40];
 
 static float s_live_wh;              /* energy of the running test, integrated in tick_cb */
+/* The RI block has whole Ah and whole minutes. Between two tester updates the
+ * fraction is filled in locally (current x time, seconds since the minute
+ * changed) and re-synced to the tester whenever its value moves. */
+static float s_ah_extra;
+static uint32_t s_sec_extra;
 
 /* Live tester data (RI block), filled by blt_poll_task once reads are allowed */
 static blt_live_t s_live;
@@ -126,12 +131,13 @@ static void fill_sample(online_sample_t *o)
         l = s_live;
         taskEXIT_CRITICAL(&s_live_mux);
         o->tester_live = true;
+        strlcpy(o->battery_id, l.battery_id, sizeof o->battery_id);
         o->voltage_v = l.v_batt;
         o->current_a = l.i_charge > 0.05f ? l.i_charge : -l.i_discharge;
-        o->capacity_ah = l.ah_discharged;
+        o->capacity_ah = l.ah_discharged + s_ah_extra;
         o->energy_wh = s_live_wh;              /* not in the RI block: integrated in tick_cb */
         bool chg = l.state == BLT_ST_CHARGE || l.state == BLT_ST_CHARGE_PAUSE;
-        o->elapsed_s = (uint32_t)(chg ? l.t_charge_min : l.t_discharge_min) * 60u;
+        o->elapsed_s = (uint32_t)(chg ? l.t_charge_min : l.t_discharge_min) * 60u + s_sec_extra;
         o->temp_c = l.temp_c[0];
         o->state = l.state == BLT_ST_DISCHARGE || l.state == BLT_ST_CHARGE ? TS_DISCHARGE :
                    l.state == BLT_ST_DISCHARGE_PAUSE || l.state == BLT_ST_CHARGE_PAUSE ? TS_REST :
@@ -227,16 +233,30 @@ static void tick_cb(lv_timer_t *t)
     static int chart_div, last_live = -1, last_tlive = -1, last_tstate = -1;
     online_sample_t o = {0};
     fill_sample(&o);
-    if (o.bms_live != last_live) {   /* BMS appeared/vanished: start a fresh curve */
-        if (last_live >= 0) hist_reset();
-        last_live = o.bms_live;
-    }
+    (void)last_live;   /* BMS appearing mid-test just starts its own series (no reset) */
     if (o.tester_live != last_tlive) {   /* tester data appeared/vanished: start a fresh curve */
         if (last_tlive >= 0) hist_reset();
         last_tlive = o.tester_live;
-        s_live_wh = 0;
+        /* joined a test already running: seed the energy with V x Ah */
+        s_live_wh = (o.tester_live && o.state != TS_IDLE) ? o.voltage_v * o.capacity_ah : 0;
     }
     if (o.tester_live) {
+        /* fill in the Ah / seconds between whole-unit tester updates */
+        static int last_ah = -1, last_min = -1;
+        static int64_t min_us;
+        int ah_int = (int)(o.capacity_ah - s_ah_extra + 0.5f);
+        int min_int = (int)((o.elapsed_s - s_sec_extra) / 60u);
+        int64_t now = esp_timer_get_time();
+        if (ah_int != last_ah) { last_ah = ah_int; s_ah_extra = 0; }
+        else if (o.state == TS_DISCHARGE && o.current_a < 0) {
+            s_ah_extra += -o.current_a * (TICK_MS / 1000.0f) / 3600.0f;
+            if (s_ah_extra > 0.99f) s_ah_extra = 0.99f;
+        }
+        if (min_int != last_min) { last_min = min_int; min_us = now; s_sec_extra = 0; }
+        else if (o.state == TS_DISCHARGE) {
+            int64_t sec = (now - min_us) / 1000000;
+            s_sec_extra = (uint32_t)(sec > 59 ? 59 : sec);
+        }
         bool running = o.state == TS_DISCHARGE || o.state == TS_REST;
         bool was_running = last_tstate == TS_DISCHARGE || last_tstate == TS_REST;
         if (running && !was_running && o.elapsed_s < 180) {   /* a new test started */
@@ -246,6 +266,21 @@ static void tick_cb(lv_timer_t *t)
         if (o.state == TS_DISCHARGE && o.current_a < 0)
             s_live_wh += o.voltage_v * -o.current_a * (TICK_MS / 1000.0f) / 3600.0f;
         if (running) hist_add(&o);
+
+        /* BMS of the running test: re-join it after a restart, forget it when
+         * the test is over (the next battery has its own BMS) */
+        static bool resume_tried;
+        if (running && !o.bms_live && !resume_tried) {
+            bms_ble_state_t bs = bms_ble_state(NULL, 0);
+            if (bs == BMS_BLE_IDLE || bs == BMS_BLE_ERROR) {
+                bms_ble_resume_last();
+                resume_tried = true;
+            }
+        }
+        if (was_running && !running && (o.state == TS_DONE || o.state == TS_IDLE)) {
+            bms_ble_forget_last();
+            resume_tried = false;
+        }
         last_tstate = o.state;
     }
     if (lv_screen_active() == s_scr[TAB_ONLINE]) ui_online_update(&o);
@@ -324,7 +359,10 @@ static void on_print(void)
     struct tm tm;
     if (clock_valid(&tm)) strftime(s_rep_date, sizeof s_rep_date, "%Y-%m-%d %H:%M", &tm);
     else strlcpy(s_rep_date, "n/a", sizeof s_rep_date);
-    if (o.bms_live) snprintf(s_rep_batt, sizeof s_rep_batt, "%uS  %.20s", o.cell_count, o.bms_name);
+    if (o.battery_id[0] && o.bms_live)
+        snprintf(s_rep_batt, sizeof s_rep_batt, "%.20s  %uS", o.battery_id, o.cell_count);
+    else if (o.battery_id[0]) strlcpy(s_rep_batt, o.battery_id, sizeof s_rep_batt);
+    else if (o.bms_live) snprintf(s_rep_batt, sizeof s_rep_batt, "%uS  %.20s", o.cell_count, o.bms_name);
     else strlcpy(s_rep_batt, "-", sizeof s_rep_batt);
 
     s_rep = (report_data_t){
@@ -402,13 +440,17 @@ static void touch_log_cb(lv_timer_t *t)
     was = now;
 }
 
-void snap_bms_connect(void)
+void snap_bms_connect(const char *name)
 {
     bms_ble_dev_t devs[12];
     int n = bms_ble_scan(devs, 12, 5000);
     int pick = -1;
     for (int i = 0; i < n; i++) {
         ESP_LOGI(TAG, "console: %-5s %-24s %d dBm", bms_kind_str(devs[i].kind), devs[i].name, devs[i].rssi);
+        if (name && *name) {
+            if (pick < 0 && strcmp(devs[i].name, name) == 0) pick = i;
+            continue;
+        }
         if (devs[i].kind == BMS_KIND_DALY && (pick < 0 || devs[pick].kind != BMS_KIND_DALY)) pick = i;
         else if (devs[i].kind != BMS_KIND_UNKNOWN && pick < 0) pick = i;
     }

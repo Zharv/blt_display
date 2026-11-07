@@ -119,7 +119,8 @@ static void snap_task(void *arg)
                 if (blt_cmd_from_str(cmd, &c)) blt_usb_read(c, (uint32_t)addr, (uint16_t)len, NULL, NULL, 2000);
             }
         }
-        else if (strcmp(line, "BMS") == 0) snap_bms_connect();
+        else if (strcmp(line, "BMS") == 0) snap_bms_connect(NULL);
+        else if (strncmp(line, "BMS ", 4) == 0) snap_bms_connect(line + 4);
         else if (strcmp(line, "BMSOFF") == 0) snap_bms_disconnect();
 
     }

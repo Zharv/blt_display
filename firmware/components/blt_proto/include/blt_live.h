@@ -15,6 +15,8 @@ extern "C" {
 
 #define BLT_LIVE_LEN       0xC0   /* whole block */
 #define BLT_LIVE_MIN_LEN   0x76   /* last field used by BltView ends at 0x75 */
+#define BLT_LIVE_ID_OFF    0x76   /* battery serial / ID text, 48 chars */
+#define BLT_LIVE_ID_LEN    48
 
 /* RI[0x6B] */
 typedef enum {
@@ -60,6 +62,9 @@ typedef struct {
     uint8_t  alarms[6];         /* 0x5F..0x64 bitmap, id = 8*byte + bit + 1 */
     uint8_t  state;             /* 0x6B blt_state_t */
     uint16_t test_no;           /* 0x70 */
+    char     battery_id[49];    /* 0x76..0xA5 ASCII, trailing spaces trimmed
+                                   (same text as the RD 0x40 battery-ID block),
+                                   e.g. "202611070001" */
 } blt_live_t;
 
 /* Decode len bytes of the live block (needs >= BLT_LIVE_MIN_LEN). */

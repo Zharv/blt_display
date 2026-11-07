@@ -20,6 +20,7 @@ typedef struct {
     /* tester */
     bool     tester_live;   /* false while the tester side is simulated */
     bool     tester_usb;    /* tester enumerated on USB (link up, values not read yet) */
+    char     battery_id[24];/* battery serial set on the tester, e.g. "202611070001" */
     uint8_t  state;         /* test_state_t */
     float    voltage_v;
     float    current_a;     /* negative = discharge */

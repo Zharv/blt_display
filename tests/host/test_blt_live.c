@@ -35,6 +35,8 @@ int main(void)
     b[0x5F] = 0x00; b[0x61] = 0x08;   /* byte 2 bit 3 -> anomaly id 20 */
     b[0x6B] = BLT_ST_DISCHARGE;
     put16(b, 0x70, 0x1234);
+    memset(b + 0x76, ' ', 48);
+    memcpy(b + 0x76, "202611070001", 12);
 
     blt_live_t l;
     CHECK(!blt_live_decode(b, BLT_LIVE_MIN_LEN - 1, &l), "short block must fail");
@@ -58,6 +60,9 @@ int main(void)
     CHECK(strcmp(blt_state_name_it(l.state), "BATTERIA IN SCARICA") == 0, "state name");
     CHECK(strcmp(blt_state_name_it(42), "?") == 0, "state out of range");
     CHECK(l.test_no == 0x1234, "test %u", l.test_no);
+    CHECK(strcmp(l.battery_id, "202611070001") == 0, "battery id '%s'", l.battery_id);
+    blt_live_t s2;
+    CHECK(blt_live_decode(b, BLT_LIVE_MIN_LEN, &s2) && s2.battery_id[0] == 0, "short block: no id");
     int first = -1;
     CHECK(blt_live_alarm_count(&l, &first) == 1 && first == 20, "alarm first %d", first);
 

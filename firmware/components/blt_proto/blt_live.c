@@ -40,6 +40,16 @@ bool blt_live_decode(const uint8_t *b, size_t len, blt_live_t *o)
     memcpy(o->alarms, b + 0x5F, 6);
     o->state = b[0x6B];
     o->test_no = u16le(b + 0x70);
+    if (len >= BLT_LIVE_ID_OFF + BLT_LIVE_ID_LEN) {
+        int n = 0;
+        for (int i = 0; i < BLT_LIVE_ID_LEN; i++) {
+            uint8_t c = b[BLT_LIVE_ID_OFF + i];
+            if (c == 0) break;
+            o->battery_id[n++] = (c >= 0x20 && c < 0x7F) ? (char)c : '?';
+        }
+        while (n > 0 && o->battery_id[n - 1] == ' ') n--;
+        o->battery_id[n] = '\0';
+    }
     return true;
 }
 

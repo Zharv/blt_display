@@ -7,7 +7,7 @@
  * normal rate. tools/snap.py turns it into a PNG.
  * "TAB n" switches the tab (0..4), "CHART m" the OnLine chart mode.
  * "BLTALLOW 1|0" allows/blocks tester read commands; "BLT RD 000000 0010"
- * sends one read (RI/RD/RW/RB only, <= 64 B) and logs the raw response.
+ * sends one read (RI/RD/RB only, <= 64 B) and logs the raw response.
  */
 #pragma once
 
@@ -31,7 +31,7 @@ bool blt_live_poll_enabled(void);
 /* "CELL n": toggle the highlight of cell n (1-based) as a tap would. */
 void snap_cell(int n);
 /* "BMS": scan and connect to the first JK found; "BMSOFF": disconnect. */
-void snap_bms_connect(void);
+void snap_bms_connect(const char *name);   /* NULL: Daly preferred, else first JK */
 void snap_bms_disconnect(void);
 
 #ifdef __cplusplus

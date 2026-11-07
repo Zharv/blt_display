@@ -69,6 +69,9 @@ typedef struct {
 static pser_t s_ps[UI_MAX_CELLS + 4];
 static int s_ps_n;
 static int s_pts = CHART_PTS;
+/* x of every point is its test time (s), mapped onto the axis [s_ax0, s_ax1] */
+static uint32_t s_pt_t[CHART_PTS];
+static uint32_t s_ax0, s_ax1 = 60;
 static int32_t s_rng[2][2] = { { 0, 100 }, { 0, 100 } };
 static lv_draw_buf_t *s_plot_buf;
 
@@ -118,7 +121,8 @@ static void plot_series(uint16_t *fb, int sp, const pser_t *p, lv_color_t col, i
     bool have = false;
     for (int k = 0; k < s_pts; k++) {
         if (p->v[k] == PT_NONE) { have = false; continue; }
-        int x = (int)((long)k * (CHART_W - 1) / (s_pts - 1));
+        uint32_t tk = s_pt_t[k] < s_ax0 ? s_ax0 : s_pt_t[k] > s_ax1 ? s_ax1 : s_pt_t[k];
+        int x = (int)((int64_t)(tk - s_ax0) * (CHART_W - 1) / (s_ax1 > s_ax0 ? s_ax1 - s_ax0 : 1));
         long t = (long)(p->v[k] - lo) * (CHART_H - 2) / (hi - lo);
         if (t < 0) t = 0;
         if (t > CHART_H - 2) t = CHART_H - 2;
@@ -160,6 +164,7 @@ static void plot_render(void)
     lv_obj_invalidate(s_chart);
 }
 static chart_mode_t s_mode;
+static lv_obj_t *s_t_title;   /* "Tester BLT  ·  <battery serial>" */
 /* cells */
 static lv_obj_t *s_cells_hdr, *s_cell[UI_MAX_CELLS], *s_cell_no[UI_MAX_CELLS],
                 *s_cell_bar[UI_MAX_CELLS], *s_cell_v[UI_MAX_CELLS], *s_cell_strip[UI_MAX_CELLS];
@@ -369,12 +374,19 @@ void ui_online_chart_refresh(void)
     int pts = n < 2 ? 2 : (n < CHART_PTS ? n : CHART_PTS);
     ps_points(pts);
 
+    /* time axis: from the first to the last recorded minute (a test may be
+     * joined half-way), rounded to a nice step */
+    uint32_t t_beg = n ? hist_at(0)->t_s : 0;
     uint32_t t_end = n ? hist_at(n - 1)->t_s : 0;
-    int mins = (int)((t_end + 59) / 60);
-    if (mins < 1) mins = 1;
-    int tstep = nice_step(mins);
-    int tmax = ((mins + tstep - 1) / tstep) * tstep;
-    scale_range(s_sc_b, 0, tmax, tmax / tstep + 1);
+    int m0 = (int)(t_beg / 60), m1 = (int)((t_end + 59) / 60);
+    if (m1 <= m0) m1 = m0 + 1;
+    int tstep = nice_step(m1 - m0);
+    int tmin = (m0 / tstep) * tstep;
+    int tmax = ((m1 + tstep - 1) / tstep) * tstep;
+    if (tmax <= tmin) tmax = tmin + tstep;
+    scale_range(s_sc_b, tmin, tmax, (tmax - tmin) / tstep + 1);
+    s_ax0 = (uint32_t)tmin * 60u;
+    s_ax1 = (uint32_t)tmax * 60u;
 
     if (n < 2) {
         fill_none(s_ser_ut); fill_none(s_ser_ub); fill_none(s_ser_i); fill_none(s_ser_d);
@@ -407,6 +419,7 @@ void ui_online_chart_refresh(void)
 
         for (int k = 0; k < pts; k++) {
             const hist_pt_t *p = hist_at((int)((long)k * (n - 1) / (pts - 1)));
+            s_pt_t[k] = p->t_s;
             ps_set(s_ser_ut, k, (int32_t)(p->v_t * 1000));
             ps_set(s_ser_ub, k,
                                      p->v_b > 0 ? (int32_t)(p->v_b * 1000) : LV_CHART_POINT_NONE);
@@ -472,6 +485,7 @@ void ui_online_chart_refresh(void)
         }
         for (int k = 0; k < pts; k++) {
             const hist_pt_t *p = hist_at((int)((long)k * (n - 1) / (pts - 1)));
+            s_pt_t[k] = p->t_s;
             float mean = 0, lo = 1e9f, hi = -1e9f;
             for (int c = 0; c < p->n; c++) mean += p->cell[c];
             if (p->n) mean /= p->n;
@@ -598,7 +612,7 @@ lv_obj_t *ui_online_create(void)
 
     /* ---- tester card ---- */
     lv_obj_t *ct = mk_card(scr, COL_L_X, CONTENT_Y, COL_L_W, TEST_H);
-    lv_obj_t *h = mk_label(ct, tr(S_TESTER), 20, C_SUB);
+    lv_obj_t *h = s_t_title = mk_label(ct, tr(S_TESTER), 20, C_SUB);
     lv_obj_set_pos(h, 16, 12);
     s_t_tag = mk_label(ct, "", 16, C_AMBER);
     lv_obj_align(s_t_tag, LV_ALIGN_TOP_RIGHT, -16, 14);
@@ -732,6 +746,8 @@ void ui_online_update(const online_sample_t *s)
 {
     if (!s) return;
 
+    if (s->tester_live && s->battery_id[0]) set_txt(s_t_title, "%s  ·  %s", tr(S_TESTER), s->battery_id);
+    else set_txt(s_t_title, "%s", tr(S_TESTER));
     set_tag(s_t_tag, tr(s->tester_live ? S_LIVE : s->tester_usb ? S_USB_LINK : S_BMS_NO_LINK),
             s->tester_live ? C_GREEN : s->tester_usb ? C_BLUE : C_SUB);
     if (!s->tester_live) {

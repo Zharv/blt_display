@@ -211,11 +211,13 @@ void blt_usb_allow_reads(bool on)
 
 bool blt_usb_reads_allowed(void) { return s_reads_allowed; }
 
-/* Pure reads only (docs/BLT_REGISTERS.md). NOT RE: despite the name it is the
- * action command - RE 0/1/2 reset statistics/cycles/graph on the tester. */
+/* Pure reads only (docs/BLT_REGISTERS.md, docs/BLT_FIRMWARE_COMMANDS.md).
+ * NOT RE (action command: RE 1 wipes the test record, RE 0x70 reboots).
+ * NOT RW/CI/CP: AP211 fw 1.36 does not know them and silently re-runs the
+ * PREVIOUS command type (undefined right after power-on). */
 static bool is_read_cmd(blt_cmd_t c)
 {
-    return c == BLT_CMD_RI || c == BLT_CMD_RD || c == BLT_CMD_RW || c == BLT_CMD_RB;
+    return c == BLT_CMD_RI || c == BLT_CMD_RD || c == BLT_CMD_RB;
 }
 
 /* BLTView never reads more than 64 bytes per frame */
@@ -234,6 +236,9 @@ esp_err_t blt_usb_read(blt_cmd_t cmd, uint32_t addr, uint16_t len, blt_response_
     }
     if (!s_dev) return ESP_ERR_INVALID_STATE;
     if (len == 0 || len > BLT_USB_MAX_READ) return ESP_ERR_INVALID_ARG;
+    /* RI reads RAM 0x0A00+addr with no range check; past the live block it
+     * reaches the PIC's hardware registers - stay inside 0x00..0xBF */
+    if (cmd == BLT_CMD_RI && addr + len > 0xC0) return ESP_ERR_INVALID_ARG;
 
     uint8_t frame[BLT_REQ_HEADER_LEN + 8];
     size_t n = blt_build_frame(frame, sizeof frame, BLT_NODE_DEFAULT, cmd, addr, NULL, len);

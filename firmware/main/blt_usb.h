@@ -5,10 +5,11 @@
  * SAFETY: the tester may be running a real battery test. By default this
  * module is PASSIVE - it only enumerates the device, prints its descriptors
  * and logs any bytes the tester sends on its own. It never sends line coding,
- * DTR/RTS or a protocol frame by itself. Read commands (RI/RD/RW/RB, <= 64 B
- * per frame like BltView) are only sent by blt_usb_read() after
- * blt_usb_allow_reads(true); everything else (WD/WC/CI/CP/GG and RE, which is
- * the reset/action command) is refused unconditionally.
+ * DTR/RTS or a protocol frame by itself. Read commands (RI within the 192-byte
+ * live block, RD, RB; <= 64 B per frame like BltView) are only sent by
+ * blt_usb_read() after blt_usb_allow_reads(true); everything else is refused
+ * unconditionally: WD/WC/GG, RE (reset/action/reboot) and RW/CI/CP (unknown to
+ * the firmware, which then repeats the previous command type).
  */
 #pragma once
 
@@ -36,7 +37,7 @@ bool blt_usb_reads_allowed(void);
 
 /*
  * One read transaction. Refuses (ESP_ERR_NOT_ALLOWED) any command that is not
- * RI/RD/RW/RB, and any command while reads are not allowed. The raw response
+ * RI/RD/RB, and any command while reads are not allowed. The raw response
  * line is logged. out may be NULL (raw log only). Returns ESP_OK on a valid
  * response, ESP_ERR_TIMEOUT, ESP_ERR_INVALID_RESPONSE (see *perr) otherwise.
  */
