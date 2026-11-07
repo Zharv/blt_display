@@ -12,7 +12,7 @@
 extern "C" {
 #endif
 
-typedef enum { TAB_ONLINE = 0, TAB_ARCHIVE, TAB_BMS, TAB_PRINTER, TAB_SETTINGS, TAB__COUNT } tab_t;
+typedef enum { TAB_ONLINE = 0, TAB_TEST, TAB_ARCHIVE, TAB_BMS, TAB_PRINTER, TAB_SETTINGS, TAB__COUNT } tab_t;
 
 typedef enum { IND_OFF = 0, IND_BUSY, IND_OK } ind_t;
 

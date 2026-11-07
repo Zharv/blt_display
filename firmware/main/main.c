@@ -29,6 +29,7 @@
 #include "ui_wifi.h"
 #include "ui_printer.h"
 #include "ui_bms.h"
+#include "ui_test.h"
 #include "fonts.h"
 #include "i18n.h"
 #include "hist.h"
@@ -117,6 +118,18 @@ static void blt_poll_task(void *arg)
                      l.v_batt, l.i_discharge, l.i_charge, l.ah_discharged, l.t_discharge_min,
                      l.state, blt_state_name_it(l.state));
     }
+}
+
+/* latest live block for other modules (blt_prepare, ui_test) */
+bool blt_live_latest(blt_live_t *out, uint32_t *age_ms)
+{
+    if (!s_live_us) return false;
+    taskENTER_CRITICAL(&s_live_mux);
+    *out = s_live;
+    int64_t at = s_live_us;
+    taskEXIT_CRITICAL(&s_live_mux);
+    if (age_ms) *age_ms = (uint32_t)((esp_timer_get_time() - at) / 1000);
+    return true;
 }
 
 /* Real data only: the tester from the USB live block, the BMS from BLE, each
@@ -552,6 +565,7 @@ void app_main(void)
     bsp_display_lock(0);
     fonts_init();
     s_scr[TAB_ONLINE]   = ui_online_create();
+    s_scr[TAB_TEST]     = ui_test_create();
     s_scr[TAB_ARCHIVE]  = ui_archive_create();
     s_scr[TAB_BMS]      = ui_bms_create();
     s_scr[TAB_PRINTER]  = ui_printer_create();

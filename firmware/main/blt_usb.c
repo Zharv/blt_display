@@ -9,6 +9,7 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "usb/cdc_acm_host.h"
+#include "blt_blocks.h"
 #include "usb/usb_host.h"
 #include "soc/usb_dwc_struct.h"
 
@@ -223,6 +224,9 @@ static bool is_read_cmd(blt_cmd_t c)
 /* BLTView never reads more than 64 bytes per frame */
 #define BLT_USB_MAX_READ 64
 
+static esp_err_t txn(blt_cmd_t cmd, uint32_t addr, const uint8_t *frame, size_t n,
+                     blt_response_t *out, blt_err_t *perr, uint32_t timeout_ms);
+
 esp_err_t blt_usb_read(blt_cmd_t cmd, uint32_t addr, uint16_t len, blt_response_t *out,
                        blt_err_t *perr, uint32_t timeout_ms)
 {
@@ -243,7 +247,12 @@ esp_err_t blt_usb_read(blt_cmd_t cmd, uint32_t addr, uint16_t len, blt_response_
     uint8_t frame[BLT_REQ_HEADER_LEN + 8];
     size_t n = blt_build_frame(frame, sizeof frame, BLT_NODE_DEFAULT, cmd, addr, NULL, len);
     if (!n) return ESP_ERR_INVALID_SIZE;
+    return txn(cmd, addr, frame, n, out, perr, timeout_ms);
+}
 
+static esp_err_t txn(blt_cmd_t cmd, uint32_t addr, const uint8_t *frame, size_t n,
+                     blt_response_t *out, blt_err_t *perr, uint32_t timeout_ms)
+{
     xSemaphoreTake(s_txn, portMAX_DELAY);
     s_rx_len = 0;
     xSemaphoreTake(s_done, 0);
@@ -287,4 +296,39 @@ esp_err_t blt_usb_read_live(blt_live_t *out)
     s_quiet = false;
     if (e != ESP_OK) return e;
     return blt_live_decode(blk, sizeof blk, out) ? ESP_OK : ESP_FAIL;
+}
+
+/* ------------------------------------------------------------- the one write */
+
+static volatile bool s_write_armed;
+
+void blt_usb_arm_write(void)
+{
+    s_write_armed = true;
+}
+
+/* WD of a whole sealed block, and ONLY the two blocks prepared before a test:
+ * the battery-ID block (0x40, 50 B) and the settings block (0x100, 62 B).
+ * One write per arming (blt_prepare arms it after checking the tester is in
+ * START). Anything else is refused. */
+esp_err_t blt_usb_write_block(uint32_t addr, const uint8_t *data, uint16_t len)
+{
+    bool armed = s_write_armed;
+    s_write_armed = false;
+    if (!armed) { ESP_LOGE(TAG, "write refused: not armed"); return ESP_ERR_NOT_ALLOWED; }
+    if (!((addr == BLT_ID_ADDR && len == BLT_ID_LEN) || (addr == BLT_CFG_ADDR && len == BLT_CFG_LEN))) {
+        ESP_LOGE(TAG, "write refused: block %06lx/%u not allowed", (unsigned long)addr, len);
+        return ESP_ERR_NOT_ALLOWED;
+    }
+    if (!blt_block_valid(data, len)) { ESP_LOGE(TAG, "write refused: block not sealed"); return ESP_ERR_INVALID_ARG; }
+    if (!s_dev) return ESP_ERR_INVALID_STATE;
+
+    static uint8_t frame[BLT_REQ_HEADER_LEN + 2 * BLT_CFG_LEN + 8];
+    size_t n = blt_build_frame(frame, sizeof frame, BLT_NODE_DEFAULT, BLT_CMD_WD, addr, data, len);
+    if (!n) return ESP_ERR_INVALID_SIZE;
+    ESP_LOGW(TAG, "WRITE block %06lx (%u B)", (unsigned long)addr, len);
+    blt_err_t be = BLT_OK;
+    esp_err_t e = txn(BLT_CMD_WD, addr, frame, n, NULL, &be, 3000);
+    if (e == ESP_OK) ESP_LOGI(TAG, "write %06lx acknowledged", (unsigned long)addr);
+    return e;
 }

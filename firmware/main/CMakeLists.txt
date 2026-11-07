@@ -17,6 +17,8 @@ idf_component_register(
         "snap.c"
         "lv_mem_psram.c"
         "blt_usb.c"
+        "blt_prepare.c"
+        "ui_test.c"
     INCLUDE_DIRS "."
     EMBED_FILES "fonts/Montserrat-Medium.ttf"
     REQUIRES

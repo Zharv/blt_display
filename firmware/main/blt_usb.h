@@ -48,6 +48,12 @@ esp_err_t blt_usb_read(blt_cmd_t cmd, uint32_t addr, uint16_t len, blt_response_
  * does) and decode it. Same permission rules as blt_usb_read(). */
 esp_err_t blt_usb_read_live(blt_live_t *out);
 
+/* The only write path: arm once, then write one sealed block - the battery-ID
+ * block (0x40, 50 B) or the settings block (0x100, 62 B). Used by blt_prepare
+ * only, after it has checked that the tester is in START. */
+void blt_usb_arm_write(void);
+esp_err_t blt_usb_write_block(uint32_t addr, const uint8_t *data, uint16_t len);
+
 #ifdef __cplusplus
 }
 #endif

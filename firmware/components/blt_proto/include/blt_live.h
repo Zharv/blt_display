@@ -62,9 +62,9 @@ typedef struct {
     uint8_t  alarms[6];         /* 0x5F..0x64 bitmap, id = 8*byte + bit + 1 */
     uint8_t  state;             /* 0x6B blt_state_t */
     uint16_t test_no;           /* 0x70 */
-    char     battery_id[49];    /* 0x76..0xA5 ASCII, trailing spaces trimmed
-                                   (same text as the RD 0x40 battery-ID block),
-                                   e.g. "202611070001" */
+    char     battery_id[17];    /* 0x76..0x85 ASCII serial, trailing spaces trimmed
+                                   (copy of the RD 0x40 ID block, e.g. "202611070001";
+                                   0x86..0xA5 is its 32-char text field) */
 } blt_live_t;
 
 /* Decode len bytes of the live block (needs >= BLT_LIVE_MIN_LEN). */

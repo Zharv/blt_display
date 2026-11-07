@@ -6,6 +6,7 @@ static lang_t s_lang = LANG_UA;
 
 static const char *const STR[S__COUNT][2] = {
     [S_TAB_ONLINE]      = { "Онлайн", "Online" },
+    [S_TAB_TEST]        = { "Тест", "Test" },
     [S_TAB_ARCHIVE]     = { "Архів", "Archive" },
     [S_TAB_BMS]         = { "BMS", "BMS" },
     [S_TAB_PRINTER]     = { "Принтер", "Printer" },
@@ -107,6 +108,24 @@ static const char *const STR[S__COUNT][2] = {
     [S_BLE_CONNECTED]   = { "підключено, чекаю даних", "connected, waiting for data" },
     [S_BLE_STREAMING]   = { "дані надходять", "receiving data" },
     [S_BLE_ERROR]       = { "збій зв'язку, повторюю", "link error, retrying" },
+    [S_PREP_TITLE]      = { "Підготовка тесту на тестері BLT", "Prepare the BLT tester for a test" },
+    [S_PREP_STATE]      = { "Стан тестера", "Tester state" },
+    [S_PREP_NOW]        = { "Зараз у тестері", "On the tester now" },
+    [S_PREP_SERIAL]     = { "Серійний номер батареї", "Battery serial number" },
+    [S_PREP_NEXT_SN]    = { "Наступний номер", "Next number" },
+    [S_PREP_AH]         = { "Запланована ємність, А·год", "Planned capacity, Ah" },
+    [S_PREP_WRITE]      = { "Записати в тестер", "Write to the tester" },
+    [S_PREP_WRITING]    = { "записую…", "writing…" },
+    [S_PREP_NOTE]       = { "Записуються лише серійний номер і ємність (Rated Capacity), і лише коли тестер у стані START - тест ще не запущено. Після запису значення читаються назад і звіряються.",
+                            "Only the serial number and the rated capacity are written, and only while the tester is in START (no test running). The values are read back and compared." },
+    [S_PREP_NO_TESTER]  = { "тестер не відповідає", "tester not responding" },
+    [S_PREP_BUSY]       = { "тест іде - запис лише в стані START", "a test is running - writing only in START" },
+    [S_PREP_READ_FAIL]  = { "не вдалося прочитати блоки тестера", "could not read the tester blocks" },
+    [S_PREP_BAD_SERIAL] = { "серійний номер: 1-16 цифр", "serial number: 1-16 digits" },
+    [S_PREP_BAD_AH]     = { "ємність: 1-9999 А·год", "capacity: 1-9999 Ah" },
+    [S_PREP_SAME]       = { "у тестері вже ці значення", "the tester already has these values" },
+    [S_PREP_WRITE_FAIL] = { "помилка запису", "write failed" },
+    [S_PREP_OK]         = { "записано і перевірено", "written and verified" },
 };
 
 void i18n_init(void)

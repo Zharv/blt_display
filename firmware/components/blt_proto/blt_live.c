@@ -42,7 +42,7 @@ bool blt_live_decode(const uint8_t *b, size_t len, blt_live_t *o)
     o->test_no = u16le(b + 0x70);
     if (len >= BLT_LIVE_ID_OFF + BLT_LIVE_ID_LEN) {
         int n = 0;
-        for (int i = 0; i < BLT_LIVE_ID_LEN; i++) {
+        for (int i = 0; i < 16; i++) {          /* serial = first 16 chars; then 32 chars of text */
             uint8_t c = b[BLT_LIVE_ID_OFF + i];
             if (c == 0) break;
             o->battery_id[n++] = (c >= 0x20 && c < 0x7F) ? (char)c : '?';

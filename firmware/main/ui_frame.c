@@ -22,10 +22,10 @@ static void (*s_print_cb)(void);
 static lv_timer_t *s_toast_t;
 
 static const str_id_t TAB_STR[TAB__COUNT] = {
-    S_TAB_ONLINE, S_TAB_ARCHIVE, S_TAB_BMS, S_TAB_PRINTER, S_TAB_SETTINGS
+    S_TAB_ONLINE, S_TAB_TEST, S_TAB_ARCHIVE, S_TAB_BMS, S_TAB_PRINTER, S_TAB_SETTINGS
 };
 static const char *const TAB_ICON[TAB__COUNT] = {
-    LV_SYMBOL_CHARGE, LV_SYMBOL_LIST, LV_SYMBOL_BATTERY_FULL, LV_SYMBOL_FILE, LV_SYMBOL_SETTINGS
+    LV_SYMBOL_CHARGE, LV_SYMBOL_EDIT, LV_SYMBOL_LIST, LV_SYMBOL_BATTERY_FULL, LV_SYMBOL_FILE, LV_SYMBOL_SETTINGS
 };
 
 static lv_color_t ind_color(ind_t i)
@@ -128,9 +128,9 @@ void ui_frame_attach(lv_obj_t *scr, tab_t tab)
     int x = PAD;
     for (int i = 0; i < TAB__COUNT; i++) {
         lv_obj_t *b = lv_button_create(bot);
-        lv_obj_set_size(b, i == TAB_SETTINGS ? 210 : 170, 56);
+        lv_obj_set_size(b, i == TAB_SETTINGS ? 190 : 150, 56);
         lv_obj_set_pos(b, x, 12);
-        x += (i == TAB_SETTINGS ? 210 : 170) + 8;
+        x += (i == TAB_SETTINGS ? 190 : 150) + 8;
         lv_obj_set_style_shadow_width(b, 0, 0);
         lv_obj_set_style_radius(b, 10, 0);
         lv_obj_set_style_bg_color(b, i == (int)tab ? C_SEL : C_BAR, 0);
