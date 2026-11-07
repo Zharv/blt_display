@@ -25,8 +25,6 @@ typedef struct {
     int16_t  temp0_dc;        /* battery temperature at the start, 0.1 C (INT16_MIN = n/a) */
     int16_t  temp_max_dc;
     char     bms[20];         /* BMS name */
-    int16_t  room_dc;         /* room temperature entered on the Test tab, 0.1 C (INT16_MIN = n/a)
-                                 - added later: shorter records load with it unset */
 } test_sum_t;
 
 /* load the NVS copy into RAM (call once from an internal-RAM task) */

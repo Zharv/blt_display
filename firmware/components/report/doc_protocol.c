@@ -266,8 +266,8 @@ void doc_protocol_render(const doc_protocol_t *d, raster_t *r)
     snprintf(s2, sizeof s2, " розряд постійним струмом %d А", d->discharge_a);
     rtext_run_t p4[] = { { "Метод випробувань:", true }, { s2, false } };
     y = rtext_para(r, L, y, W, p4, 2, body, lh, 0) + U(10);
-    snprintf(s, sizeof s, " початок %s, температура %s %s °C, напруга до тестування %s В",
-             d->start_str[0] ? d->start_str : "—", d->temp_is_room ? "в приміщенні" : "батареї", tb, vb);
+    snprintf(s, sizeof s, " початок %s, температура батареї %s °C, напруга до тестування %s В",
+             d->start_str[0] ? d->start_str : "—", tb, vb);
     rtext_run_t p5[] = { { "Умови:", true }, { s, false } };
     y = rtext_para(r, L, y, W, p5, 2, body, lh, 0) + U(40);
 

@@ -180,13 +180,6 @@ static const char *const STR[S__COUNT][2] = {
     [S_AR_NO_BMS]       = { "немає даних", "no BMS data for this test" },
     [S_AR_GRAPH_NOTE]   = { "Графік тестер зберігає лише за останні ~250 сторінок (при записі раз на хвилину це близько 3,5 доби) - у старіших тестів протокол буде без графіка.",
                             "The tester keeps only the last ~250 graph pages (about 3.5 days at one sample a minute) - older tests print without a graph." },
-    [S_PREP_ROOM]         = { "Температура в майстерні, °C", "Room temperature, °C" },
-    [S_PREP_ROOM_SET]     = { "Зберегти", "Save" },
-    [S_PREP_ROOM_PENDING] = { "буде записано до тесту: %d °C", "goes with the test: %d °C" },
-    [S_PREP_ROOM_NONE]    = { "не задано", "not set" },
-    [S_PREP_ROOM_BAD]     = { "від -30 до 60 °C", "from -30 to 60 °C" },
-    [S_PREP_ROOM_HINT]    = { "Записується до поточного тесту (якщо він іде і ще без неї) або до наступного. Якщо BMS не підключена, протокол оцінить вплив холоду за цією температурою.",
-                              "Goes with the running test (if it has none yet) or the next one. Without a BMS the protocol judges the effect of cold from it." },
 };
 
 void i18n_init(void)

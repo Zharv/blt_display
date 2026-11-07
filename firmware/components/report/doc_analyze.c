@@ -72,29 +72,28 @@ int doc_analyze(const doc_facts_t *f, char *verdict, int vn, doc_finding_t *out,
     /* 3. temperature: Li-ion capacity is rated at 25 C; colder cells give
      * roughly 0.4 %/C (NMC) or 0.6 %/C (LFP) less - an approximate model */
     if (f->temp_known) {
-        const char *tw = f->temp_room ? "в приміщенні" : "батареї";
         float k_c = f->lfp ? 0.6f : 0.4f;
         float loss = f->temp_start < 25 ? (25 - f->temp_start) * k_c : 0;
         char heat[80] = "";
         if (f->temp_max_known) fmt(heat, sizeof heat, ", під час розряду до %.0f °C", f->temp_max);
         if (f->temp_start < 20 && pct < 100 && f->stop != DOC_STOP_RUNNING) {
             float at25 = loss < 50 ? f->ah / (1 - loss / 100) : f->ah;
-            fmt(t, sizeof t, "Температура %s на початку %.0f °C%s - нижче нормальних 20-25 °C: при такій температурі "
+            fmt(t, sizeof t, "Температура батареї на початку %.0f °C%s - нижче нормальних 20-25 °C: при такій температурі "
                 "Li-ion віддає приблизно на %.0f %% менше; при 25 °C очікувалось би близько %.0f А·год.",
-                tw, f->temp_start, heat, loss, at25);
+                f->temp_start, heat, loss, at25);
             add(out, &k, max, DOC_F_CAUSE, t);
         } else if (f->temp_start < 20) {
-            fmt(t, sizeof t, "Температура %s на початку %.0f °C%s - знижена (ємність при холоді менша приблизно на %.0f %%).",
-                tw, f->temp_start, heat, loss);
+            fmt(t, sizeof t, "Температура батареї на початку %.0f °C%s - знижена (ємність при холоді менша приблизно на %.0f %%).",
+                f->temp_start, heat, loss);
             add(out, &k, max, DOC_F_NOTE, t);
         } else {
-            fmt(t, sizeof t, "Температура %s: %.0f °C на початку%s - %s.", tw, f->temp_start, heat,
+            fmt(t, sizeof t, "Температура батареї: %.0f °C на початку%s - %s.", f->temp_start, heat,
                 f->temp_max_known && f->temp_max > 45 ? "помітний нагрів" : "в нормі");
             add(out, &k, max, f->temp_max_known && f->temp_max > 45 ? DOC_F_NOTE : DOC_F_OK, t);
         }
     } else if (pct < 100 && f->stop != DOC_STOP_RUNNING) {
-        add(out, &k, max, DOC_F_NOTE, "Температуру не вимірювали (BMS не була підключена, температуру в майстерні не задано) - "
-            "вплив температури на результат оцінити неможливо; при холоді в приміщенні ємність могла бути заниженою.");
+        add(out, &k, max, DOC_F_NOTE, "Температуру батареї не вимірювали (BMS не була підключена) - вплив температури "
+            "на результат оцінити неможливо; при холоді в приміщенні ємність могла бути заниженою.");
     }
 
     /* 4. how the discharge ended */

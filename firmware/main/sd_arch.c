@@ -4,7 +4,6 @@
 #include "blt_usb.h"
 
 #include <dirent.h>
-#include <stddef.h>
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -352,10 +351,7 @@ bool sd_arch_get_sum(uint16_t cycle, test_sum_t *out)
     snprintf(p, sizeof p, "%s/summary.bin", dir);
     FILE *f = fopen(p, "rb");
     if (!f) return false;
-    memset(out, 0, sizeof *out);
-    out->room_dc = INT16_MIN;
-    size_t n = fread(out, 1, sizeof *out, f);
+    bool ok = fread(out, sizeof *out, 1, f) == 1;
     fclose(f);
-    if (n < sizeof *out) out->room_dc = INT16_MIN;
-    return n >= offsetof(test_sum_t, room_dc);
+    return ok;
 }

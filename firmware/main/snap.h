@@ -34,9 +34,6 @@ uint8_t health_chem_get(void);
 void health_chem_set(uint8_t chem);
 /* print the protocol of a recorder cycle (0xFFFF = current test); LVGL context */
 bool app_print_protocol(uint16_t cycle);
-/* room temperature typed on the Test tab: kept until the running / next test takes it */
-void room_temp_set(float c);
-bool room_temp_pending(float *c);
 /* "CELL n": toggle the highlight of cell n (1-based) as a tap would. */
 void snap_cell(int n);
 void snap_protocol(bool print, uint16_t cycle);   /* PROTO [n] / PROTOPRINT */

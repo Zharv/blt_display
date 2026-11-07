@@ -12,9 +12,7 @@
 #include "blt_usb.h"
 #include "blt_live.h"
 #include "blt_blocks.h"
-#include "snap.h"
 
-#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -24,7 +22,7 @@
 
 extern bool blt_live_latest(blt_live_t *out, uint32_t *age_ms);
 
-static lv_obj_t *s_scr, *s_state, *s_now, *s_sn, *s_ah, *s_write, *s_result, *s_kb, *s_room, *s_room_st;
+static lv_obj_t *s_scr, *s_state, *s_now, *s_sn, *s_ah, *s_write, *s_result, *s_kb;
 
 /* worker results, applied by the LVGL timer */
 static volatile int s_read_done;            /* 1 = values below are fresh */
@@ -99,19 +97,6 @@ static void new_sn_cb(lv_event_t *e)
     if (blt_live_latest(&l, &age)) suggest_serial(&l);
 }
 
-/* room temperature: kept on the panel and given to the running / next test */
-static void room_ready_cb(lv_event_t *e)
-{
-    (void)e;
-    const char *t = lv_textarea_get_text(s_room);
-    if (!t[0]) return;
-    int v = atoi(t);
-    if (v < -30 || v > 60) { lv_label_set_text(s_room_st, tr(S_PREP_ROOM_BAD)); return; }
-    room_temp_set((float)v);
-    lv_textarea_set_text(s_room, "");
-    lv_obj_add_flag(s_kb, LV_OBJ_FLAG_HIDDEN);
-}
-
 static void ta_focus_cb(lv_event_t *e)
 {
     lv_obj_clear_flag(s_kb, LV_OBJ_FLAG_HIDDEN);
@@ -158,10 +143,6 @@ static void poll_cb(lv_timer_t *t)
         s_write_done = 0;
     }
 
-    float rt;
-    if (room_temp_pending(&rt)) lv_label_set_text_fmt(s_room_st, tr(S_PREP_ROOM_PENDING), (int)lroundf(rt));
-    else lv_label_set_text(s_room_st, tr(S_PREP_ROOM_NONE));
-
     bool can = start && !s_busy;
     if (can) lv_obj_clear_state(s_write, LV_STATE_DISABLED);
     else lv_obj_add_state(s_write, LV_STATE_DISABLED);
@@ -204,27 +185,6 @@ lv_obj_t *ui_test_create(void)
     lv_obj_set_style_bg_color(s_write, C_LINE, LV_STATE_DISABLED);
     s_result = ui_label(c, "", 20, C_SUB);
     lv_obj_set_pos(s_result, 16, 424);
-
-    /* room temperature (no BMS: the protocol judges the cold from it) */
-    lv_obj_t *rl = ui_label(c, tr(S_PREP_ROOM), 20, C_SUB);
-    lv_obj_set_pos(rl, 660, 136);
-    s_room = lv_textarea_create(c);
-    lv_textarea_set_one_line(s_room, true);
-    lv_textarea_set_max_length(s_room, 3);
-    lv_textarea_set_accepted_chars(s_room, "-0123456789");
-    lv_obj_set_style_text_font(s_room, lv_obj_get_style_text_font(rl, 0), 0);
-    lv_obj_set_size(s_room, 200, 56);
-    lv_obj_set_pos(s_room, 660, 166);
-    lv_obj_add_event_cb(s_room, ta_focus_cb, LV_EVENT_CLICKED, NULL);
-    lv_obj_add_event_cb(s_room, room_ready_cb, LV_EVENT_READY, NULL);
-    lv_obj_t *rb = ui_button(c, tr(S_PREP_ROOM_SET), 200, 56, lv_color_hex(0x0f1630), room_ready_cb, NULL);
-    lv_obj_set_pos(rb, 876, 166);
-    s_room_st = ui_label(c, "", 20, C_TXT);
-    lv_obj_set_pos(s_room_st, 660, 236);
-    lv_obj_t *rh = ui_label(c, tr(S_PREP_ROOM_HINT), 16, C_SUB);
-    lv_obj_set_pos(rh, 660, 274);
-    lv_obj_set_width(rh, 560);
-    lv_label_set_long_mode(rh, LV_LABEL_LONG_WRAP);
 
     lv_obj_t *note = ui_label(c, tr(S_PREP_NOTE), 16, C_SUB);
     lv_obj_set_pos(note, 16, 470);
