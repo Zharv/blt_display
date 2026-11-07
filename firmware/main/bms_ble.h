@@ -74,6 +74,9 @@ uint32_t bms_ble_frames(void);
 
 const char *bms_ble_state_str(bms_ble_state_t s);
 
+/* kind of the connected / target BMS (bms_kind_t) */
+uint8_t bms_ble_kind(void);
+
 #ifdef __cplusplus
 }
 #endif

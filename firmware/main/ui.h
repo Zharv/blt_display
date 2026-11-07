@@ -7,6 +7,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include "lvgl.h"
+#include "health.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -28,6 +29,10 @@ typedef struct {
     float    energy_wh;
     uint32_t elapsed_s;
     float    temp_c;
+    uint16_t test_no;
+    uint8_t  rated_v;       /* programmed on the tester (0 = unknown) */
+    uint8_t  i_set_a;       /* programmed discharge current */
+    uint8_t  alarms;        /* active tester alarms */
 
     /* BMS */
     bool     bms_present;
@@ -43,6 +48,7 @@ typedef struct {
     uint32_t balance_bits;
     uint8_t  temp_count;
     int16_t  temp_dc[4];    /* 0.1 degC; JK: T1, T2, MOS */
+    uint8_t  bms_kind;      /* bms_kind_t */
 } online_sample_t;
 
 /* Build the OnLine screen (its own screen object). Call with the display locked. */
@@ -50,6 +56,9 @@ lv_obj_t *ui_online_create(void);
 
 /* Readouts + cell grid. */
 void ui_online_update(const online_sample_t *s);
+
+/* Battery-status card (verdict + gauges); see components/health. */
+void ui_online_health(const health_in_t *in, const health_out_t *h);
 
 /* Redraw the chart from the history (cheap enough every ~1 s). */
 void ui_online_chart_refresh(void);

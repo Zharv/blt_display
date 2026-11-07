@@ -1,4 +1,5 @@
 #include "ui.h"
+#include "health.h"
 #include "ui_style.h"
 #include "fonts.h"
 #include "i18n.h"
@@ -21,8 +22,10 @@
 #define COL_L_W  384
 #define COL_R_X  (COL_L_X + COL_L_W + 16)
 #define COL_R_W  (SCR_W - COL_R_X - PAD)
-#define TEST_H   312
-#define BMS_Y    (CONTENT_Y + TEST_H + 12)
+#define TEST_H   210
+#define HS_Y     (CONTENT_Y + TEST_H + 10)
+#define HS_H     194
+#define BMS_Y    (HS_Y + HS_H + 10)
 #define BMS_H    (CONTENT_Y + CONTENT_H - BMS_Y)
 #define CHART_CARD_H 384
 #define CELLS_Y  (CONTENT_Y + CHART_CARD_H + 12)
@@ -677,6 +680,137 @@ static void update_cells(const online_sample_t *s)
     }
 }
 
+/* ------------------------------------------------------------- battery status */
+
+#define HC_OK_BG    lv_color_hex(0x123d2c)
+#define HC_WARN_BG  lv_color_hex(0x3d3214)
+#define HC_STOP_BG  lv_color_hex(0x4d1a20)
+#define HZ_OK       lv_color_hex(0x2f8a5c)
+#define HZ_WARN     lv_color_hex(0xa8862f)
+#define HZ_STOP     lv_color_hex(0xa83f3f)
+#define HG_BAR_X    136
+#define HG_BAR_W    112
+
+static lv_obj_t *s_hs_card, *s_hs_ban, *s_hs_icon, *s_hs_title, *s_hs_reason;
+static lv_obj_t *s_hg_lbl[HG_N], *s_hg_bar[HG_N], *s_hg_seg[HG_N][5], *s_hg_mk[HG_N], *s_hg_val[HG_N];
+
+static lv_color_t lvl_fg(hlevel_t l) { return l == HL_STOP ? C_RED : l == HL_WARN ? C_AMBER : l == HL_OK ? C_GREEN : C_SUB; }
+static lv_color_t lvl_bg(hlevel_t l) { return l == HL_STOP ? HC_STOP_BG : l == HL_WARN ? HC_WARN_BG : l == HL_OK ? HC_OK_BG : C_CARD2; }
+static lv_color_t lvl_zone(hlevel_t l) { return l == HL_STOP ? HZ_STOP : l == HL_WARN ? HZ_WARN : HZ_OK; }
+
+static void build_health(lv_obj_t *scr)
+{
+    static const str_id_t names[HG_N] = { S_HG_DELTA, S_HG_CELL, S_HG_CURR, S_HG_TEMP };
+    s_hs_card = mk_box(scr, COL_L_X, HS_Y, COL_L_W, HS_H, C_CARD, 14);
+    lv_obj_set_style_border_width(s_hs_card, 3, 0);
+    lv_obj_set_style_border_color(s_hs_card, C_CARD, 0);
+    s_hs_ban = mk_box(s_hs_card, 8, 8, COL_L_W - 16, 70, C_CARD2, 10);
+    s_hs_icon = mk_label(s_hs_ban, LV_SYMBOL_MINUS, 32, C_SUB);
+    lv_obj_align(s_hs_icon, LV_ALIGN_LEFT_MID, 14, 0);
+    s_hs_title = mk_label(s_hs_ban, tr(S_HS_IDLE), 24, C_SUB);
+    lv_obj_set_pos(s_hs_title, 62, 6);
+    s_hs_reason = mk_label(s_hs_ban, "", 16, C_SUB);
+    lv_obj_set_pos(s_hs_reason, 62, 40);
+    lv_obj_set_width(s_hs_reason, COL_L_W - 16 - 70);
+    lv_label_set_long_mode(s_hs_reason, LV_LABEL_LONG_DOT);
+    for (int i = 0; i < HG_N; i++) {
+        int y = 88 + i * 25;
+        s_hg_lbl[i] = mk_label(s_hs_card, tr(names[i]), 16, C_SUB);
+        lv_obj_set_pos(s_hg_lbl[i], 16, y);
+        s_hg_bar[i] = mk_box(s_hs_card, HG_BAR_X, y + 6, HG_BAR_W, 10, C_CARD2, 5);
+        lv_obj_set_style_clip_corner(s_hg_bar[i], true, 0);
+        for (int z = 0; z < 5; z++) {
+            s_hg_seg[i][z] = mk_box(s_hg_bar[i], 0, 0, 1, 10, HZ_OK, 0);
+            lv_obj_add_flag(s_hg_seg[i][z], LV_OBJ_FLAG_HIDDEN);
+        }
+        s_hg_mk[i] = mk_box(s_hs_card, HG_BAR_X, y + 1, 4, 20, C_TXT, 2);
+        lv_obj_add_flag(s_hg_mk[i], LV_OBJ_FLAG_HIDDEN);
+        s_hg_val[i] = mk_label(s_hs_card, "--", 16, C_TXT);
+        lv_obj_set_width(s_hg_val[i], COL_L_W - (HG_BAR_X + HG_BAR_W + 8) - 14);
+        lv_obj_set_style_text_align(s_hg_val[i], LV_TEXT_ALIGN_RIGHT, 0);
+        lv_obj_set_pos(s_hg_val[i], HG_BAR_X + HG_BAR_W + 8, y);
+    }
+}
+
+static int gauge_x(const hgauge_t *g, float v)
+{
+    float f = (v - g->lo) / (g->hi - g->lo);
+    if (f < 0) f = 0;
+    if (f > 1) f = 1;
+    return (int)(f * HG_BAR_W + 0.5f);
+}
+
+static void set_box(lv_obj_t *o, int x, int w)
+{
+    if (lv_obj_get_x(o) != x) lv_obj_set_x(o, x);
+    if (lv_obj_get_width(o) != w) lv_obj_set_width(o, w);
+}
+
+void ui_online_health(const health_in_t *in, const health_out_t *h)
+{
+    if (!s_hs_card) return;
+    static const char *const icons[] = { LV_SYMBOL_MINUS, LV_SYMBOL_OK, LV_SYMBOL_WARNING, LV_SYMBOL_CLOSE };
+    static const str_id_t titles[] = { S_HS_IDLE, S_HS_OK, S_HS_WARN, S_HS_STOP };
+    lv_color_t fg = lvl_fg(h->level);
+    set_bg_color(s_hs_ban, lvl_bg(h->level));
+    set_txt(s_hs_icon, "%s", icons[h->level]);
+    set_txt_color(s_hs_icon, fg);
+    set_txt(s_hs_title, "%s", tr(titles[h->level]));
+    set_txt_color(s_hs_title, fg);
+    const char *chem = h->chem == CHEM_LFP ? "LFP" : "NMC";
+    switch (h->reason) {
+    case HR_IDLE:       set_txt(s_hs_reason, "%s · %s", chem, tr(S_HR_IDLE)); break;
+    case HR_OK:         set_txt(s_hs_reason, "%s · %s", chem, tr(S_HR_OK)); break;
+    case HR_NO_BMS:     set_txt(s_hs_reason, "%s", tr(S_HR_NO_BMS)); break;
+    case HR_ALARM:      set_txt(s_hs_reason, "%s", tr(S_HR_ALARM)); break;
+    case HR_CELL_LOW:   set_txt(s_hs_reason, tr(S_HR_CELL_LOW), h->cell, h->a); break;
+    case HR_DELTA:      set_txt(s_hs_reason, tr(S_HR_DELTA), h->a, h->cell); break;
+    case HR_DELTA_GROW: set_txt(s_hs_reason, tr(S_HR_DELTA_GROW), h->a, h->b, h->cell); break;
+    case HR_CURRENT:    set_txt(s_hs_reason, tr(S_HR_CURRENT), h->a, h->b); break;
+    case HR_VDROP:      set_txt(s_hs_reason, tr(S_HR_VDROP), h->a); break;
+    case HR_TEMP:       set_txt(s_hs_reason, tr(S_HR_TEMP), h->a, h->b); break;
+    case HR_MOS:        set_txt(s_hs_reason, tr(S_HR_MOS), h->a); break;
+    }
+    set_txt_color(s_hs_reason, fg);
+    /* STOP: the card border blinks red */
+    bool on = h->level == HL_STOP && (lv_tick_get() / 500) % 2 == 0;
+    lv_color_t bc = on ? C_RED : C_CARD;
+    if (!lv_color_eq(lv_obj_get_style_border_color(s_hs_card, LV_PART_MAIN), bc))
+        lv_obj_set_style_border_color(s_hs_card, bc, 0);
+
+    for (int i = 0; i < HG_N; i++) {
+        const hgauge_t *g = &h->g[i];
+        float e0 = g->lo;
+        for (int z = 0; z < 5; z++) {
+            if (z >= g->nz) { set_hidden(s_hg_seg[i][z], true); continue; }
+            int x0 = gauge_x(g, e0), x1 = gauge_x(g, g->edge[z]);
+            set_box(s_hg_seg[i][z], x0, x1 - x0 > 0 ? x1 - x0 : 1);
+            set_bg_color(s_hg_seg[i][z], lvl_zone(g->zl[z]));
+            set_hidden(s_hg_seg[i][z], false);
+            e0 = g->edge[z];
+        }
+        set_hidden(s_hg_mk[i], !g->valid);
+        if (g->valid) {
+            int x = HG_BAR_X + gauge_x(g, g->val) - 2;
+            if (lv_obj_get_x(s_hg_mk[i]) != x) lv_obj_set_x(s_hg_mk[i], x);
+        }
+        set_txt_color(s_hg_val[i], g->valid ? lvl_fg(g->level) : C_SUB);
+        if (!g->valid) { set_txt(s_hg_val[i], "--"); continue; }
+        switch (i) {
+        case HG_DELTA:
+            if (in->has_base) set_txt(s_hg_val[i], "%.0f %s · %+d", g->val, tr(S_U_MV), (int)g->val - in->delta0_mv);
+            else set_txt(s_hg_val[i], "%.0f %s", g->val, tr(S_U_MV));
+            break;
+        case HG_CELL: set_txt(s_hg_val[i], "%.3f · №%d", g->val, in->cell_min_idx + 1); break;
+        case HG_CURR: set_txt(s_hg_val[i], "%.1f / %.0f A", in->i_tester, in->i_set); break;
+        case HG_TEMP:
+            if (in->has_base) set_txt(s_hg_val[i], "%.0f °C · %+d", g->val, (int)lroundf(g->val - in->temp0));
+            else set_txt(s_hg_val[i], "%.0f °C", g->val);
+            break;
+        }
+    }
+}
+
 /* ------------------------------------------------------------- build */
 
 static lv_obj_t *mk_card(lv_obj_t *p, int x, int y, int w, int h)
@@ -697,12 +831,14 @@ lv_obj_t *ui_online_create(void)
     lv_obj_set_pos(h, 16, 12);
     s_t_tag = mk_label(ct, "", 16, C_AMBER);
     lv_obj_align(s_t_tag, LV_ALIGN_TOP_RIGHT, -16, 14);
-    s_t_v = mk_value(ct, 16, 40, 48, C_GREEN, tr(S_U_V), 24);
-    s_t_a = mk_value(ct, 16, 104, 32, C_TXT, tr(S_U_A), 20);
-    s_t_ah = mk_stat(ct, 16, 160, S_CAPACITY);
-    s_t_wh = mk_stat(ct, 200, 160, S_ENERGY);
-    s_t_time = mk_stat(ct, 16, 228, S_TIME);
-    s_t_temp = mk_stat(ct, 200, 228, S_TEMP);
+    s_t_v = mk_value(ct, 16, 32, 48, C_GREEN, tr(S_U_V), 24);
+    s_t_a = mk_value(ct, 200, 46, 32, C_TXT, tr(S_U_A), 20);
+    s_t_ah = mk_stat(ct, 16, 96, S_CAPACITY);
+    s_t_wh = mk_stat(ct, 200, 96, S_ENERGY);
+    s_t_time = mk_stat(ct, 16, 152, S_TIME);
+    s_t_temp = mk_stat(ct, 200, 152, S_TEMP);
+
+    build_health(scr);
 
     /* ---- BMS card ---- */
     lv_obj_t *cb = mk_card(scr, COL_L_X, BMS_Y, COL_L_W, BMS_H);
@@ -712,16 +848,16 @@ lv_obj_t *ui_online_create(void)
     lv_label_set_long_mode(s_b_title, LV_LABEL_LONG_DOT);
     s_b_tag = mk_label(cb, "", 16, C_SUB);
     lv_obj_align(s_b_tag, LV_ALIGN_TOP_RIGHT, -16, 14);
-    s_b_soc = mk_value(cb, 16, 40, 48, C_BLUE, "%", 24);
-    s_b_v = mk_value(cb, 170, 40, 32, C_TXT, tr(S_U_V), 20);
-    s_b_a = mk_value(cb, 170, 84, 32, C_TXT, tr(S_U_A), 20);
-    lv_obj_t *dl = mk_label(cb, tr(S_CELL_DELTA), 16, C_SUB);
-    lv_obj_set_pos(dl, 16, 136);
-    s_b_delta = mk_value(cb, 16, 158, 32, C_AMBER, tr(S_U_MV), 20);
-    s_b_minmax = mk_label(cb, "", 20, C_TXT);
-    lv_obj_set_pos(s_b_minmax, 16, 206);
-    s_b_temps = mk_label(cb, "", 20, C_SUB);
-    lv_obj_set_pos(s_b_temps, 16, 244);
+    s_b_soc = mk_value(cb, 16, 36, 48, C_BLUE, "%", 24);
+    s_b_v = mk_value(cb, 170, 36, 32, C_TXT, tr(S_U_V), 20);
+    s_b_a = mk_value(cb, 170, 76, 32, C_TXT, tr(S_U_A), 20);
+    lv_obj_t *dl = mk_label(cb, "Δ", 20, C_SUB);
+    lv_obj_set_pos(dl, 16, 128);
+    s_b_delta = mk_value(cb, 40, 122, 24, C_AMBER, tr(S_U_MV), 16);
+    s_b_minmax = mk_label(cb, "", 16, C_TXT);
+    lv_obj_set_pos(s_b_minmax, 16, 160);
+    s_b_temps = mk_label(cb, "", 16, C_SUB);
+    lv_obj_set_pos(s_b_temps, 16, 188);
 
     /* ---- chart card ---- */
     lv_obj_t *cc = mk_card(scr, COL_R_X, CONTENT_Y, COL_R_W, CHART_CARD_H);
@@ -863,7 +999,7 @@ void ui_online_update(const online_sample_t *s)
         set_txt(s_b_delta, "%u", s->imbalance_mv);
         set_txt_color(s_b_delta, s->imbalance_mv >= 50 ? C_RED : C_AMBER);
         if (s->cell_count)
-            set_txt(s_b_minmax, "min #%u %d.%03d   ·   max #%u %d.%03d",
+            set_txt(s_b_minmax, "min #%u %d.%03d  ·  max #%u %d.%03d",
                                   s->cell_min_idx + 1, s->cell_min_mv / 1000, s->cell_min_mv % 1000,
                                   s->cell_max_idx + 1, s->cell_max_mv / 1000, s->cell_max_mv % 1000);
         char t[80] = "";

@@ -30,6 +30,7 @@ idf_component_register(
         usb
         espressif__usb_host_cdc_acm
         report
+        health
         print_ipp
         bms
         bt

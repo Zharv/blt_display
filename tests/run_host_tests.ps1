@@ -37,6 +37,8 @@ $inc_report = Join-Path $root "firmware\components\report\include"
 $src_report = SrcsOf "report"
 $inc_ipp    = Join-Path $root "firmware\components\print_ipp\include"
 $src_ipp    = SrcsOf "print_ipp"
+$inc_health = Join-Path $root "firmware\components\health\include"
+$src_health = SrcsOf "health"
 
 # discover tests/host/test_*.c and assign includes/sources/args by name
 $tests = @()
@@ -52,6 +54,8 @@ foreach ($c in Get-ChildItem "$here\host" -Filter "test_*.c" | Sort-Object Name)
         $tests += @{ name = $name; inc = $inc_report; src = $src_report; args = "`"$out\report.pgm`"" }
     } elseif ($name -eq "test_urf") {
         $tests += @{ name = $name; inc = $inc_report; src = $src_report; args = "" }
+    } elseif ($name -eq "test_health") {
+        $tests += @{ name = $name; inc = $inc_health; src = $src_health; args = "" }
     } elseif ($name -eq "test_ipp") {
         $tests += @{ name = $name; inc = $inc_ipp; src = $src_ipp; args = "" }
     }

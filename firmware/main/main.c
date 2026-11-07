@@ -15,6 +15,7 @@
 #include "esp_timer.h"
 #include "esp_netif_sntp.h"
 #include "nvs_flash.h"
+#include <limits.h>
 #include "lvgl.h"
 #include "bsp/esp-bsp.h"
 #include "bsp/display.h"
@@ -168,6 +169,14 @@ static void fill_sample(online_sample_t *o)
         bool chg = l.state == BLT_ST_CHARGE || l.state == BLT_ST_CHARGE_PAUSE;
         o->elapsed_s = (uint32_t)(chg ? l.t_charge_min : l.t_discharge_min) * 60u + s_sec_extra;
         o->temp_c = l.temp_c[0];
+        o->test_no = l.test_no;
+        o->rated_v = l.rated_v;
+        o->i_set_a = l.i_set;
+        /* id 28 "VSTOP IN SCARICA" (voltage threshold reached) is information,
+         * not a fault: it is set during a normal discharge */
+        blt_live_t la = l;
+        la.alarms[3] &= (uint8_t)~(1u << 3);
+        o->alarms = (uint8_t)blt_live_alarm_count(&la, NULL);
         o->state = l.state == BLT_ST_DISCHARGE || l.state == BLT_ST_CHARGE ? TS_DISCHARGE :
                    l.state == BLT_ST_DISCHARGE_PAUSE || l.state == BLT_ST_CHARGE_PAUSE ? TS_REST :
                    l.state == BLT_ST_END ? TS_DONE : TS_IDLE;
@@ -187,6 +196,7 @@ static void fill_sample(online_sample_t *o)
     o->balance_bits = b.balance_bits;
     o->temp_count = b.temp_count > 4 ? 4 : b.temp_count;
     for (int i = 0; i < o->temp_count; i++) o->temp_dc[i] = b.temp_dc[i];
+    o->bms_kind = bms_ble_kind();
     ui_sample_finish_cells(o);
 }
 
@@ -255,6 +265,150 @@ static void frame_refresh(const online_sample_t *o)
 
 static lv_obj_t *s_scr[TAB__COUNT];
 
+/* ------------------------------------------------------- battery status -- */
+
+/* Values at the start of the test, kept per test number in NVS so a restart
+ * of the panel does not lose them. Taken from the first BMS sample after one
+ * minute of discharge (the load step itself makes the cells jump). */
+typedef struct {
+    uint16_t test;
+    uint16_t delta0_mv;
+    int16_t  temp0_dc;      /* 0.1 degC, INT16_MIN = unknown */
+    uint8_t  valid;
+    uint8_t  at_start;      /* taken in the first 10 min (not after joining late) */
+} health_base_t;
+
+static health_base_t s_hb;
+static bool s_hb_loaded;
+static uint8_t s_chem;      /* chem_t, user setting */
+
+static void bms_temps(const online_sample_t *o, bool *has_t, float *t, bool *has_mos, float *mos)
+{
+    *has_t = *has_mos = false;
+    int nbat = o->temp_count;
+    if (o->bms_kind == BMS_KIND_JK && nbat >= 3) {      /* JK: T1, T2, MOS */
+        *has_mos = true;
+        *mos = o->temp_dc[2] / 10.0f;
+        nbat = 2;
+    }
+    for (int i = 0; i < nbat; i++) {
+        float v = o->temp_dc[i] / 10.0f;
+        if (!*has_t || v > *t) *t = v;
+        *has_t = true;
+    }
+}
+
+static void health_base_save(void)
+{
+    nvs_handle_t h;
+    if (nvs_open("health", NVS_READWRITE, &h) == ESP_OK) {
+        nvs_set_blob(h, "base", &s_hb, sizeof s_hb);
+        nvs_commit(h);
+        nvs_close(h);
+    }
+}
+
+static void health_load(void)
+{
+    if (s_hb_loaded) return;
+    s_hb_loaded = true;
+    nvs_handle_t h;
+    if (nvs_open("health", NVS_READONLY, &h) == ESP_OK) {
+        size_t n = sizeof s_hb;
+        if (nvs_get_blob(h, "base", &s_hb, &n) != ESP_OK || n != sizeof s_hb) memset(&s_hb, 0, sizeof s_hb);
+        nvs_get_u8(h, "chem", &s_chem);
+        nvs_close(h);
+    }
+}
+
+uint8_t health_chem_get(void) { health_load(); return s_chem; }
+
+void health_chem_set(uint8_t chem)
+{
+    s_chem = chem > CHEM_LFP ? CHEM_AUTO : chem;
+    nvs_handle_t h;
+    if (nvs_open("health", NVS_READWRITE, &h) == ESP_OK) {
+        nvs_set_u8(h, "chem", s_chem);
+        nvs_commit(h);
+        nvs_close(h);
+    }
+}
+
+static void health_tick(const online_sample_t *o)
+{
+    health_load();
+    bool has_t, has_mos;
+    float tbat = 0, tmos = 0;
+    bms_temps(o, &has_t, &tbat, &has_mos, &tmos);
+
+    bool discharging = o->tester_live && o->state == TS_DISCHARGE;
+    if (o->tester_live && (o->state == TS_DISCHARGE || o->state == TS_REST)) {
+        if (s_hb.test != o->test_no || (!s_hb.valid && s_hb.test == 0)) {
+            memset(&s_hb, 0, sizeof s_hb);
+            s_hb.test = o->test_no;
+        }
+        if (!s_hb.valid && o->bms_live && o->cell_count >= 2 && o->elapsed_s >= 60) {
+            s_hb.valid = 1;
+            s_hb.delta0_mv = o->imbalance_mv;
+            s_hb.temp0_dc = has_t ? (int16_t)(tbat * 10) : INT16_MIN;
+            s_hb.at_start = o->elapsed_s < 600;
+            health_base_save();
+            ESP_LOGI(TAG, "health: test %u baseline d=%u mV t=%.1f C%s", s_hb.test, s_hb.delta0_mv,
+                     has_t ? tbat : 0.0f, s_hb.at_start ? "" : " (joined late)");
+        }
+    }
+    s_temp_start = (s_hb.valid && s_hb.at_start && s_hb.temp0_dc != INT16_MIN && s_hb.test == o->test_no)
+                   ? s_hb.temp0_dc / 10.0f : -999;
+
+    static health_in_t in;
+    static health_out_t out;
+    memset(&in, 0, sizeof in);
+    in.discharging = discharging;
+    in.elapsed_s = o->elapsed_s;
+    in.alarms = o->alarms;
+    in.v_tester = o->tester_live ? o->voltage_v : 0;
+    in.i_tester = o->tester_live ? fabsf(o->current_a) : 0;
+    in.i_set = o->tester_live ? o->i_set_a : 0;
+    in.rated_v = o->tester_live ? o->rated_v : 0;
+    in.bms = o->bms_live && o->cell_count >= 1;
+    in.v_bms = o->bms_pack_v;
+    in.cells = o->cell_count;
+    in.cell_min_mv = o->cell_min_mv;
+    in.cell_max_mv = o->cell_max_mv;
+    in.cell_min_idx = o->cell_min_idx;
+    in.has_temp = has_t; in.temp_bat = tbat;
+    in.has_mos = has_mos; in.temp_mos = tmos;
+    in.has_base = s_hb.valid && s_hb.test == o->test_no && o->tester_live;
+    in.delta0_mv = s_hb.delta0_mv;
+    in.temp0 = s_hb.temp0_dc != INT16_MIN ? s_hb.temp0_dc / 10.0f : tbat;
+    in.chem = (chem_t)s_chem;
+    health_eval(&in, &out);
+
+    /* debounce the verdict (values near a limit must not make it flicker):
+     * a worse level shows after 3 s, a better one after 10 s, "no BMS" after
+     * 20 s (it reconnects by itself after a restart); gauges are always live */
+    static health_out_t shown;
+    static int pend;
+    if (out.level == shown.level || out.level == HL_NONE || (shown.level == HL_NONE && out.level == HL_OK)) {
+        pend = 0;
+        if (out.level != shown.level || out.reason != shown.reason)
+            ESP_LOGW(TAG, "health: level %d reason %d cell %d a=%.2f b=%.2f", out.level, out.reason, out.cell, out.a, out.b);
+        shown = out;
+    } else {
+        int need = out.level < shown.level ? 10000 / TICK_MS
+                 : out.reason == HR_NO_BMS ? 20000 / TICK_MS : 3000 / TICK_MS;
+        if (++pend >= need) {
+            pend = 0;
+            ESP_LOGW(TAG, "health: level %d reason %d cell %d a=%.2f b=%.2f", out.level, out.reason, out.cell, out.a, out.b);
+            shown = out;
+        } else {
+            memcpy(shown.g, out.g, sizeof shown.g);
+            shown.chem = out.chem;
+        }
+    }
+    if (lv_screen_active() == s_scr[TAB_ONLINE]) ui_online_health(&in, &shown);
+}
+
 static void tick_cb(lv_timer_t *t)
 {
     (void)t;
@@ -303,18 +457,7 @@ static void tick_cb(lv_timer_t *t)
         }
         if (o.state == TS_DISCHARGE && o.current_a < 0)
             s_live_wh += o.voltage_v * -o.current_a * (TICK_MS / 1000.0f) / 3600.0f;
-        if (running && t_synced) {
-            if (hist_count() == 0) {
-                s_temp_start = -999;
-                if (o.bms_live && o.temp_count && o.elapsed_s < 300) {
-                    int nt = o.temp_count > 2 ? 2 : o.temp_count;   /* T1, T2 (not MOS) */
-                    float sum = 0;
-                    for (int k = 0; k < nt; k++) sum += o.temp_dc[k] / 10.0f;
-                    s_temp_start = sum / nt;
-                }
-            }
-            hist_add(&o);
-        }
+        if (running && t_synced) hist_add(&o);
 
         /* BMS of the running test: re-join it after a restart, forget it when
          * the test is over (the next battery has its own BMS) */
@@ -332,6 +475,7 @@ static void tick_cb(lv_timer_t *t)
         }
         last_tstate = o.state;
     }
+    health_tick(&o);
     if (lv_screen_active() == s_scr[TAB_ONLINE]) ui_online_update(&o);
     if (++chart_div >= 4) { chart_div = 0; ui_online_chart_refresh(); }   /* ~2 s */
     frame_refresh(&o);

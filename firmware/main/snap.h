@@ -12,6 +12,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -28,6 +29,9 @@ void snap_chart(int mode);
 void snap_blt_once(void);
 void blt_live_poll_enable(bool on);
 bool blt_live_poll_enabled(void);
+/* battery chemistry for the status limits: 0 auto, 1 NMC, 2 LFP (NVS) */
+uint8_t health_chem_get(void);
+void health_chem_set(uint8_t chem);
 /* "CELL n": toggle the highlight of cell n (1-based) as a tap would. */
 void snap_cell(int n);
 void snap_protocol(bool print);   /* PROTO / PROTOPRINT */

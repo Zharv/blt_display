@@ -2,6 +2,7 @@
 #include "ui_common.h"
 #include "ui_style.h"
 #include "i18n.h"
+#include "fonts.h"
 #include "netw.h"
 #include "snap.h"
 
@@ -88,6 +89,13 @@ static void poll_sw_cb(lv_event_t *e)
     blt_live_poll_enable(lv_obj_has_state(sw, LV_STATE_CHECKED));
 }
 
+static void chem_cb(lv_event_t *e)
+{
+    lv_obj_t *bm = lv_event_get_target(e);
+    uint32_t id = lv_buttonmatrix_get_selected_button(bm);
+    if (id <= 2) health_chem_set((uint8_t)id);
+}
+
 static void poll_cb(lv_timer_t *t)
 {
     (void)t;
@@ -170,7 +178,7 @@ lv_obj_t *ui_wifi_create(void)
     lv_obj_set_pos(note, 16, 222);
 
     /* ---- BLT tester card ---- */
-    lv_obj_t *tc = ui_card(scr, LANG_X, CONTENT_Y + 316, LANG_W, 232);
+    lv_obj_t *tc = ui_card(scr, LANG_X, CONTENT_Y + 316, LANG_W, 332);
     lv_obj_t *th = ui_label(tc, tr(S_SET_TESTER), 24, C_TXT);
     lv_obj_set_pos(th, 16, 14);
     lv_obj_t *tl = ui_label(tc, tr(S_SET_TESTER_POLL), 20, C_TXT);
@@ -185,6 +193,31 @@ lv_obj_t *ui_wifi_create(void)
     lv_obj_set_pos(tn, 16, 120);
     lv_obj_set_width(tn, LANG_W - 32);
     lv_label_set_long_mode(tn, LV_LABEL_LONG_WRAP);
+
+    /* battery chemistry: limits of the battery-status card */
+    lv_obj_t *cl = ui_label(tc, tr(S_SET_CHEM), 20, C_TXT);
+    lv_obj_set_pos(cl, 16, 214);
+    static const char *chem_map[4];
+    chem_map[0] = tr(S_CHEM_AUTO); chem_map[1] = "NMC"; chem_map[2] = "LFP"; chem_map[3] = "";
+    lv_obj_t *bm = lv_buttonmatrix_create(tc);
+    lv_buttonmatrix_set_map(bm, chem_map);
+    lv_buttonmatrix_set_button_ctrl_all(bm, LV_BUTTONMATRIX_CTRL_CHECKABLE);
+    lv_buttonmatrix_set_one_checked(bm, true);
+    lv_buttonmatrix_set_button_ctrl(bm, health_chem_get() <= 2 ? health_chem_get() : 0, LV_BUTTONMATRIX_CTRL_CHECKED);
+    lv_obj_set_size(bm, 216, 52);
+    lv_obj_align(bm, LV_ALIGN_TOP_RIGHT, -16, 202);
+    lv_obj_set_style_bg_opa(bm, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(bm, 0, 0);
+    lv_obj_set_style_pad_all(bm, 4, 0);
+    lv_obj_set_style_text_font(bm, font_ua(20), LV_PART_ITEMS);
+    lv_obj_set_style_bg_color(bm, C_CARD2, LV_PART_ITEMS);
+    lv_obj_set_style_text_color(bm, C_TXT, LV_PART_ITEMS);
+    lv_obj_set_style_bg_color(bm, C_ACCENT, LV_PART_ITEMS | LV_STATE_CHECKED);
+    lv_obj_add_event_cb(bm, chem_cb, LV_EVENT_VALUE_CHANGED, NULL);
+    lv_obj_t *ch = ui_label(tc, tr(S_SET_CHEM_HINT), 16, C_SUB);
+    lv_obj_set_pos(ch, 16, 266);
+    lv_obj_set_width(ch, LANG_W - 32);
+    lv_label_set_long_mode(ch, LV_LABEL_LONG_WRAP);
 
     s_kb = ui_keyboard(scr, LV_KEYBOARD_MODE_TEXT_LOWER);
 

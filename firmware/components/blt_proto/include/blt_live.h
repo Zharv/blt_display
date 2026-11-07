@@ -46,6 +46,9 @@ typedef struct {
     float    temp_c[4];         /* 0x0A..0x10 s16 /10 degC (probe 1 = internal) */
     uint16_t flags;             /* 0x18 BLT_FLAG_*                          */
     uint8_t  outputs1, outputs2;/* 0x1A, 0x1B relays/stages/fans           */
+    uint16_t rated_ah;          /* 0x1F programmed rated capacity, Ah      */
+    uint8_t  rated_v;           /* 0x22 programmed rated voltage, V        */
+    uint8_t  i_set;             /* 0x23 programmed discharge current, A    */
     uint8_t  rtc_s, rtc_m, rtc_h, rtc_d, rtc_mo, rtc_y;  /* 0x26..0x2B BCD -> binary */
     uint16_t t_charge_min;      /* 0x38 */
     uint16_t t_discharge_min;   /* 0x3A */

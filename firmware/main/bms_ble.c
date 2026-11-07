@@ -799,3 +799,8 @@ void bms_ble_forget_last(void)
 {
     clear_last();
 }
+
+uint8_t bms_ble_kind(void)
+{
+    return s_kind;
+}

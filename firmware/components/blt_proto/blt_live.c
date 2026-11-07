@@ -40,6 +40,9 @@ bool blt_live_decode(const uint8_t *b, size_t len, blt_live_t *o)
     memcpy(o->alarms, b + 0x5F, 6);
     o->state = b[0x6B];
     o->test_no = u16le(b + 0x70);
+    o->rated_ah = u16le(b + 0x1F);
+    o->rated_v = b[0x22];
+    o->i_set = b[0x23];
     if (len >= BLT_LIVE_ID_OFF + BLT_LIVE_ID_LEN) {
         int n = 0;
         for (int i = 0; i < 16; i++) {          /* serial = first 16 chars; then 32 chars of text */
