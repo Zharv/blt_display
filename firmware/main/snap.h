@@ -32,9 +32,11 @@ bool blt_live_poll_enabled(void);
 /* battery chemistry for the status limits: 0 auto, 1 NMC, 2 LFP (NVS) */
 uint8_t health_chem_get(void);
 void health_chem_set(uint8_t chem);
+/* print the protocol of a recorder cycle (0xFFFF = current test); LVGL context */
+bool app_print_protocol(uint16_t cycle);
 /* "CELL n": toggle the highlight of cell n (1-based) as a tap would. */
 void snap_cell(int n);
-void snap_protocol(bool print);   /* PROTO / PROTOPRINT */
+void snap_protocol(bool print, uint16_t cycle);   /* PROTO [n] / PROTOPRINT */
 /* "BMS": scan and connect to the first JK found; "BMSOFF": disconnect. */
 void snap_bms_connect(const char *name);   /* NULL: Daly preferred, else first JK */
 void snap_bms_disconnect(void);

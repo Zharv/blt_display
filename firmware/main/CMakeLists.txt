@@ -20,6 +20,8 @@ idf_component_register(
         "blt_prepare.c"
         "blt_archive.c"
         "doc_print.c"
+        "test_sum.c"
+        "ui_archive.c"
         "ui_test.c"
     INCLUDE_DIRS "."
     EMBED_FILES "fonts/Montserrat-Medium.ttf"

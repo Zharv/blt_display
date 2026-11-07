@@ -3,6 +3,8 @@
 #include "doc.h"
 #include "rtext.h"
 #include "print_job.h"
+#include "test_sum.h"
+#include <limits.h>
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -44,9 +46,20 @@ static esp_err_t build_and_print(void)
 {
     blt_test_t *t = heap_caps_calloc(1, sizeof *t, MALLOC_CAP_SPIRAM);
     if (!t) return ESP_ERR_NO_MEM;
-    esp_err_t e = blt_archive_fetch_current(t);
+    esp_err_t e = blt_archive_fetch(s_x.cycle, t);
     if (e != ESP_OK) { heap_caps_free(t); return e; }
     const blt_rec_t *rc = &t->rec;
+
+    /* what the panel saw of this test (BMS): live values for the current test,
+     * the saved summary for an archive one */
+    test_sum_t sum;
+    bool have_sum = test_sum_get(rc->pr_test, &sum);
+    bool live_bms = t->current && s_x.bms;
+    if (!t->current) { s_x.bms = false; s_x.live_ah = 0; s_x.temp_start = -999; }
+    if (have_sum) {
+        if (sum.at_start && sum.temp0_dc != INT16_MIN) s_x.temp_start = sum.temp0_dc / 10.0f;
+        if (sum.delta_max_mv > s_x.imbalance_max_mv) s_x.imbalance_max_mv = sum.delta_max_mv;
+    }
 
     static doc_kv_t info[16];
     int ni = 0;
@@ -58,7 +71,7 @@ static esp_err_t build_and_print(void)
     }
     float ah = rc->ah_dis;
     if (s_x.live_ah > ah && s_x.live_ah < ah + 1.5f) ah = s_x.live_ah;
-    bool running = rc->state == 1 || rc->state == 2;
+    bool running = t->current && rc->state == 1;      /* still discharging */
 
     KVR("Тестер", "BLT160 · тест %u", rc->pr_test);
     KVR("Серійний № батареї", "%s", rc->battery_id[0] ? rc->battery_id : "—");
@@ -84,11 +97,15 @@ static esp_err_t build_and_print(void)
     if (na == 1) KVR("Аварії тестера", "%s", blt_alarm_name_ua(a1)[0] ? blt_alarm_name_ua(a1) : "1");
     else if (na) KVR("Аварії тестера", "%d (%s, …)", na, blt_alarm_name_ua(a1));
     else KVR("Аварії тестера", "немає");
-    if (s_x.bms) {
+    if (live_bms) {
         KVR("BMS", "%.20s · %uS", s_x.bms_name, s_x.cells);
         KV("Комірки (зараз)", "%.3f…%.3f В", s_x.cell_min_mv / 1000.0f, s_x.cell_max_mv / 1000.0f);
         if (s_x.imbalance_max_mv) KVR("Розбаланс", "%u мВ (макс. %u)", s_x.imbalance_mv, s_x.imbalance_max_mv);
         else KV("Розбаланс", "%u мВ", s_x.imbalance_mv);
+    } else if (have_sum && sum.cells) {
+        KVR("BMS", "%.19s · %uS", sum.bms, sum.cells);
+        KV("Комірки (кінець)", "%.3f…%.3f В", sum.cell_min_mv / 1000.0f, sum.cell_max_mv / 1000.0f);
+        KVR("Розбаланс", "старт %u, макс. %u мВ", sum.delta0_mv, sum.delta_max_mv);
     }
 
     static doc_protocol_t d;

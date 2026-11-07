@@ -93,14 +93,3 @@ lv_obj_t *ui_keyboard(lv_obj_t *scr, lv_keyboard_mode_t mode)
     lv_obj_add_flag(kb, LV_OBJ_FLAG_HIDDEN);
     return kb;
 }
-
-lv_obj_t *ui_archive_create(void)
-{
-    lv_obj_t *scr = ui_screen();
-    lv_obj_t *c = ui_card(scr, PAD, CONTENT_Y, SCR_W - 2 * PAD, CONTENT_H);
-    lv_obj_t *l = ui_label(c, LV_SYMBOL_LIST, 48, C_MUTED);
-    lv_obj_align(l, LV_ALIGN_CENTER, 0, -40);
-    lv_obj_t *t = ui_label(c, tr(S_ARCHIVE_EMPTY), 24, C_SUB);
-    lv_obj_align(t, LV_ALIGN_CENTER, 0, 30);
-    return scr;
-}

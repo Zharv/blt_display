@@ -40,6 +40,7 @@
 #include "netw.h"
 #include "print_job.h"
 #include "doc_print.h"
+#include "test_sum.h"
 #include "blt_archive.h"
 #include "esp_heap_caps.h"
 
@@ -357,6 +358,38 @@ static void health_tick(const online_sample_t *o)
                      has_t ? tbat : 0.0f, s_hb.at_start ? "" : " (joined late)");
         }
     }
+    /* what the panel sees of this test, for later (archive) protocols */
+    static test_sum_t sum;
+    static int64_t sum_saved_us;
+    if (o->tester_live && (o->state == TS_DISCHARGE || o->state == TS_REST) && o->bms_live && o->cell_count >= 2) {
+        if (sum.test != o->test_no || sum.cells == 0) {
+            if (!test_sum_get(o->test_no, &sum)) {
+                memset(&sum, 0, sizeof sum);
+                sum.test = o->test_no;
+                sum.temp0_dc = sum.temp_max_dc = INT16_MIN;
+            }
+        }
+        sum.cells = o->cell_count;
+        strlcpy(sum.bms, o->bms_name, sizeof sum.bms);
+        sum.cell_min_mv = o->cell_min_mv;
+        sum.cell_max_mv = o->cell_max_mv;
+        if (o->imbalance_mv > sum.delta_max_mv && o->elapsed_s >= 60) sum.delta_max_mv = o->imbalance_mv;
+        if (has_t && (sum.temp_max_dc == INT16_MIN || tbat * 10 > sum.temp_max_dc)) sum.temp_max_dc = (int16_t)(tbat * 10);
+        if (s_hb.valid && s_hb.test == o->test_no) {
+            sum.delta0_mv = s_hb.delta0_mv;
+            sum.temp0_dc = s_hb.temp0_dc;
+            sum.at_start = s_hb.at_start;
+        }
+        int64_t now = esp_timer_get_time();
+        if (now - sum_saved_us > 60 * 1000000LL) {     /* NVS: once a minute */
+            sum_saved_us = now;
+            test_sum_put(&sum);
+        }
+    } else if (sum.cells && sum_saved_us) {             /* test over: final values */
+        test_sum_put(&sum);
+        sum_saved_us = 0;
+    }
+
     s_temp_start = (s_hb.valid && s_hb.at_start && s_hb.temp0_dc != INT16_MIN && s_hb.test == o->test_no)
                    ? s_hb.temp0_dc / 10.0f : -999;
 
@@ -521,6 +554,7 @@ static void doc_extra_fill(doc_extra_t *x)
     online_sample_t o = {0};
     fill_sample(&o);
     memset(x, 0, sizeof *x);
+    x->cycle = BLT_ARCH_CURRENT;
     x->temp_start = s_temp_start;
     x->live_ah = o.tester_live ? o.capacity_ah : 0;
     if (o.bms_live && o.cell_count) {
@@ -545,6 +579,22 @@ static void doc_extra_fill(doc_extra_t *x)
     }
 }
 
+/* Print the protocol of recorder cycle `cycle` (BLT_ARCH_CURRENT = the
+ * running / last test). LVGL context. Returns false if a print is running. */
+bool app_print_protocol(uint16_t cycle)
+{
+    if (s_printing) return false;
+    doc_extra_t x;
+    doc_extra_fill(&x);
+    x.cycle = cycle;
+    if (!doc_print_protocol(&x, true, print_done)) return false;
+    s_printing = true;
+    char msg[48];
+    snprintf(msg, sizeof msg, "%s  %s", LV_SYMBOL_FILE, tr(S_PR_PRINTING));
+    ui_frame_toast(msg);
+    return true;
+}
+
 /* Runs in the LVGL context (tab-bar button): print the test protocol. */
 static void on_print(void)
 {
@@ -560,13 +610,14 @@ static void on_print(void)
 }
 
 /* dev console: PROTO (log the page data) / PROTOPRINT */
-void snap_protocol(bool print)
+void snap_protocol(bool print, uint16_t cycle)
 {
     bsp_display_lock(0);
     if (print) on_print();
     else {
         doc_extra_t x;
         doc_extra_fill(&x);
+        x.cycle = cycle;
         doc_print_protocol(&x, false, NULL);
     }
     bsp_display_unlock();

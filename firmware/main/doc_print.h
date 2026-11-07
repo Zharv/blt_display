@@ -14,6 +14,7 @@ extern "C" {
 #endif
 
 typedef struct {
+    uint16_t cycle;             /* tester record index, BLT_ARCH_CURRENT (0xFFFF) = running/last test */
     bool     bms;               /* BMS data valid */
     char     bms_name[32];
     uint8_t  cells;

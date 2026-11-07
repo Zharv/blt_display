@@ -124,8 +124,9 @@ static void snap_task(void *arg)
         else if (strncmp(line, "BMS ", 4) == 0) snap_bms_connect(line + 4);
         else if (strcmp(line, "BMSOFF") == 0) snap_bms_disconnect();
         else if (strcmp(line, "IPPATTR") == 0) print_job_query_attrs();
-        else if (strcmp(line, "PROTO") == 0) snap_protocol(false);
-        else if (strcmp(line, "PROTOPRINT") == 0) snap_protocol(true);
+        else if (strcmp(line, "PROTO") == 0) snap_protocol(false, 0xFFFF);
+        else if (strncmp(line, "PROTO ", 6) == 0) snap_protocol(false, (uint16_t)atoi(line + 6));
+        else if (strcmp(line, "PROTOPRINT") == 0) snap_protocol(true, 0xFFFF);
 
     }
 }
