@@ -1,5 +1,9 @@
 #include "blt_archive.h"
 #include "blt_usb.h"
+#include "sd_arch.h"
+#include "sd_store.h"
+
+#include <stdio.h>
 
 #include <string.h>
 
@@ -10,7 +14,9 @@ static const char *TAG = "blt_arch";
 
 bool blt_rec_has_result(const blt_rec_t *r)
 {
-    return r->dis_d && r->dis_mo && r->t_dis_min > 0 && r->ah_dis > 0;
+    /* a real discharge: start date, at least 5 minutes and some Ah (a start
+     * stopped at once by the battery is not a test result) */
+    return r->dis_d && r->dis_mo && r->t_dis_min >= 5 && r->ah_dis > 0;
 }
 
 static bool all_ff(const uint8_t *b, int n)
@@ -130,11 +136,37 @@ static bool known_empty(uint16_t n)
     return false;
 }
 
+static bool s_empty_dirty, s_empty_loaded;
+
 static void mark_empty(uint16_t n)
 {
     if (known_empty(n)) return;
     if (s_empty_n < 150) s_empty[s_empty_n++] = n;
     else { memmove(s_empty, s_empty + 1, sizeof s_empty - sizeof s_empty[0]); s_empty[149] = n; }
+    s_empty_dirty = true;
+}
+
+/* the empty-record list survives restarts on the SD card */
+#define EMPTY_FILE SD_DIR "/empty.bin"
+
+static void empty_load(void)
+{
+    if (s_empty_loaded || !sd_store_ready()) return;
+    s_empty_loaded = true;
+    FILE *f = fopen(EMPTY_FILE, "rb");
+    if (!f) return;
+    s_empty_n = (int)fread(s_empty, sizeof s_empty[0], 150, f);
+    fclose(f);
+}
+
+static void empty_save(void)
+{
+    if (!s_empty_dirty || !sd_store_ready()) return;
+    FILE *f = fopen(EMPTY_FILE, "wb");
+    if (!f) return;
+    fwrite(s_empty, sizeof s_empty[0], (size_t)s_empty_n, f);
+    fclose(f);
+    s_empty_dirty = false;
 }
 
 esp_err_t blt_archive_list(blt_arch_entry_t *cache, int *cache_n, int max,
@@ -149,7 +181,12 @@ esp_err_t blt_archive_list(blt_arch_entry_t *cache, int *cache_n, int max,
 
     blt_arch_entry_t *out = heap_caps_malloc((size_t)max * sizeof *out, MALLOC_CAP_SPIRAM);
     if (!out) return ESP_ERR_NO_MEM;
-    int no = 0, reads = 0;
+    /* finished records already on the SD card are taken from there */
+    empty_load();
+    const int SD_MAX = 600;
+    blt_arch_entry_t *sd = heap_caps_malloc(SD_MAX * sizeof *sd, MALLOC_CAP_SPIRAM);
+    int sd_n = sd ? sd_arch_list(sd, SD_MAX) : 0;
+    int no = 0, reads = 0, from_sd = 0;
     for (int k = 0; k < nact && no < max; k++) {
         uint16_t n = (uint16_t)(top - k);
         blt_arch_entry_t ent = { .n = n, .current = (k == 0), .on_tester = true };
@@ -159,8 +196,15 @@ esp_err_t blt_archive_list(blt_arch_entry_t *cache, int *cache_n, int max,
             int hit = -1;
             for (int c = 0; c < *cache_n; c++)
                 if (cache[c].n == n && !cache[c].current) { hit = c; break; }
+            int sd_hit = -1;
+            if (hit < 0)
+                for (int c = 0; c < sd_n; c++)
+                    if (sd[c].n == n) { sd_hit = c; break; }
             if (hit >= 0) {
                 ent.rec = cache[hit].rec;
+            } else if (sd_hit >= 0) {
+                ent.rec = sd[sd_hit].rec;
+                from_sd++;
             } else if (known_empty(n)) {
                 if (progress) progress(k + 1, nact);
                 continue;
@@ -185,6 +229,9 @@ esp_err_t blt_archive_list(blt_arch_entry_t *cache, int *cache_n, int max,
         *cache_n = no;
     }
     heap_caps_free(out);
-    ESP_LOGI(TAG, "list: %d cycles checked (%d read), %d with results", nact, reads, no);
+    heap_caps_free(sd);
+    empty_save();
+    ESP_LOGI(TAG, "list: %d cycles checked (%d read from the tester, %d from SD), %d with results",
+             nact, reads, from_sd, no);
     return e;
 }
