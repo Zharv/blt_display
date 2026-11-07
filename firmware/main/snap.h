@@ -11,6 +11,8 @@
  */
 #pragma once
 
+#include <stdbool.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -21,6 +23,11 @@ void snap_start(void);
  * "CHART m" sets the OnLine chart mode (0 discharge, 1 imbalance). */
 void snap_nav(int tab);
 void snap_chart(int mode);
+/* "BLTONCE": one read of the tester live block (RI 0x00..0xBF), decoded to the
+ * log; reads are blocked again afterwards. "BLTPOLL 1|0": continuous polling. */
+void snap_blt_once(void);
+void blt_live_poll_enable(bool on);
+bool blt_live_poll_enabled(void);
 /* "CELL n": toggle the highlight of cell n (1-based) as a tap would. */
 void snap_cell(int n);
 /* "BMS": scan and connect to the first JK found; "BMSOFF": disconnect. */

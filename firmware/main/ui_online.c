@@ -547,7 +547,8 @@ static void update_cells(const online_sample_t *s)
     int n = s->bms_present ? s->cell_count : 0;
     if (n > UI_MAX_CELLS) n = UI_MAX_CELLS;
     cells_layout(n);
-    set_txt(s_cells_hdr, "%s  ·  %dS", tr(S_CELLS), n);
+    if (n) set_txt(s_cells_hdr, "%s  ·  %dS", tr(S_CELLS), n);
+    else set_txt(s_cells_hdr, "%s", tr(S_CELLS));
     if (!n) return;
 
     int lo = s->cell_min_mv - 15, hi = s->cell_max_mv + 15;

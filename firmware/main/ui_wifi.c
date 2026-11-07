@@ -3,6 +3,7 @@
 #include "ui_style.h"
 #include "i18n.h"
 #include "netw.h"
+#include "snap.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -16,7 +17,7 @@
 #define LANG_X (PAD + WIFI_W + 16)
 #define LANG_W (SCR_W - LANG_X - PAD)
 
-static lv_obj_t *s_list, *s_sel_lbl, *s_pass_ta, *s_kb, *s_status;
+static lv_obj_t *s_list, *s_sel_lbl, *s_pass_ta, *s_kb, *s_status, *s_poll_sw;
 static char s_sel_ssid[33];
 
 static netw_ap_t s_aps[24];
@@ -81,9 +82,20 @@ static void lang_cb(lv_event_t *e)
     lv_timer_set_repeat_count(t, 1);
 }
 
+static void poll_sw_cb(lv_event_t *e)
+{
+    lv_obj_t *sw = lv_event_get_target(e);
+    blt_live_poll_enable(lv_obj_has_state(sw, LV_STATE_CHECKED));
+}
+
 static void poll_cb(lv_timer_t *t)
 {
     (void)t;
+    /* keep the switch in step with the polling state (it can also be set from the console) */
+    if (s_poll_sw && lv_obj_has_state(s_poll_sw, LV_STATE_CHECKED) != blt_live_poll_enabled()) {
+        if (blt_live_poll_enabled()) lv_obj_add_state(s_poll_sw, LV_STATE_CHECKED);
+        else lv_obj_clear_state(s_poll_sw, LV_STATE_CHECKED);
+    }
     if (s_scan_n >= 0) {
         int n = s_scan_n;
         s_scan_n = -1;
@@ -156,6 +168,23 @@ lv_obj_t *ui_wifi_create(void)
     }
     lv_obj_t *note = ui_label(lc, tr(S_SET_LANG_NOTE), 16, C_SUB);
     lv_obj_set_pos(note, 16, 222);
+
+    /* ---- BLT tester card ---- */
+    lv_obj_t *tc = ui_card(scr, LANG_X, CONTENT_Y + 316, LANG_W, 232);
+    lv_obj_t *th = ui_label(tc, tr(S_SET_TESTER), 24, C_TXT);
+    lv_obj_set_pos(th, 16, 14);
+    lv_obj_t *tl = ui_label(tc, tr(S_SET_TESTER_POLL), 20, C_TXT);
+    lv_obj_set_pos(tl, 16, 70);
+    lv_obj_t *sw = s_poll_sw = lv_switch_create(tc);
+    lv_obj_set_size(sw, 72, 38);
+    lv_obj_align(sw, LV_ALIGN_TOP_RIGHT, -16, 62);
+    lv_obj_set_style_bg_color(sw, C_ACCENT, LV_PART_INDICATOR | LV_STATE_CHECKED);
+    if (blt_live_poll_enabled()) lv_obj_add_state(sw, LV_STATE_CHECKED);
+    lv_obj_add_event_cb(sw, poll_sw_cb, LV_EVENT_VALUE_CHANGED, NULL);
+    lv_obj_t *tn = ui_label(tc, tr(S_SET_TESTER_NOTE), 16, C_SUB);
+    lv_obj_set_pos(tn, 16, 120);
+    lv_obj_set_width(tn, LANG_W - 32);
+    lv_label_set_long_mode(tn, LV_LABEL_LONG_WRAP);
 
     s_kb = ui_keyboard(scr, LV_KEYBOARD_MODE_TEXT_LOWER);
 

@@ -121,10 +121,42 @@ static void sim_fill_sample(const sim_state_t *s, online_sample_t *o)
     ui_sample_finish_cells(o);
 }
 
+static float s_live_wh;              /* energy of the running test, integrated in tick_cb */
+
 /* Live tester data (RI block), filled by blt_poll_task once reads are allowed */
 static blt_live_t s_live;
 static volatile int64_t s_live_us;
 static portMUX_TYPE s_live_mux = portMUX_INITIALIZER_UNLOCKED;
+
+static volatile bool s_live_poll;   /* continuous polling (off until the user enables it) */
+
+void blt_live_poll_enable(bool on)
+{
+    s_live_poll = on;
+    blt_usb_allow_reads(on);
+    ESP_LOGW(TAG, "tester live polling %s", on ? "ON" : "off");
+    nvs_handle_t h;
+    if (nvs_open("blt", NVS_READWRITE, &h) == ESP_OK) {
+        nvs_set_u8(h, "poll", on ? 1 : 0);
+        nvs_commit(h);
+        nvs_close(h);
+    }
+}
+
+bool blt_live_poll_enabled(void) { return s_live_poll; }
+
+/* boot: restore the user's choice (read-only polling of the tester) */
+static void blt_live_poll_restore(void)
+{
+    nvs_handle_t h;
+    uint8_t v = 0;
+    if (nvs_open("blt", NVS_READONLY, &h) == ESP_OK) {
+        nvs_get_u8(h, "poll", &v);
+        nvs_close(h);
+    }
+    s_live_poll = v != 0;
+    blt_usb_allow_reads(s_live_poll);
+}
 
 static void blt_poll_task(void *arg)
 {
@@ -132,7 +164,7 @@ static void blt_poll_task(void *arg)
     int fails = 0;
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(900));          /* BltView polls every 900 ms */
-        if (!blt_usb_reads_allowed() || blt_usb_state(NULL, NULL) != BLT_USB_CONNECTED) continue;
+        if (!s_live_poll || !blt_usb_reads_allowed() || blt_usb_state(NULL, NULL) != BLT_USB_CONNECTED) continue;
         blt_live_t l;
         esp_err_t e = blt_usb_read_live(&l);
         if (e != ESP_OK) {
@@ -167,13 +199,19 @@ static void fill_sample(online_sample_t *o)
         o->voltage_v = l.v_batt;
         o->current_a = l.i_charge > 0.05f ? l.i_charge : -l.i_discharge;
         o->capacity_ah = l.ah_discharged;
-        o->energy_wh = 0;                      /* not in the RI block */
+        o->energy_wh = s_live_wh;              /* not in the RI block: integrated in tick_cb */
         bool chg = l.state == BLT_ST_CHARGE || l.state == BLT_ST_CHARGE_PAUSE;
         o->elapsed_s = (uint32_t)(chg ? l.t_charge_min : l.t_discharge_min) * 60u;
         o->temp_c = l.temp_c[0];
         o->state = l.state == BLT_ST_DISCHARGE || l.state == BLT_ST_CHARGE ? TS_DISCHARGE :
                    l.state == BLT_ST_DISCHARGE_PAUSE || l.state == BLT_ST_CHARGE_PAUSE ? TS_REST :
                    l.state == BLT_ST_END ? TS_DONE : TS_IDLE;
+        /* real tester: never show the simulated BMS next to it */
+        o->bms_present = false;
+        o->bms_live = false;
+        o->cell_count = 0;
+        o->temp_count = 0;
+        o->bms_name[0] = '\0';
     }
     bms_data_t b;
     uint32_t age = 0;
@@ -260,7 +298,7 @@ static void tick_cb(lv_timer_t *t)
 {
     (void)t;
     int64_t t0 = esp_timer_get_time();
-    static int done_hold, chart_div, last_live = -1;
+    static int done_hold, chart_div, last_live = -1, last_tlive = -1, last_tstate = -1;
     if (s_sim.done) {
         if (++done_hold > 20) { done_hold = 0; sim_reset(&s_sim); hist_reset(); }
     } else {
@@ -272,7 +310,25 @@ static void tick_cb(lv_timer_t *t)
         if (last_live >= 0) hist_reset();
         last_live = o.bms_live;
     }
-    if (!s_sim.done) hist_add(&o);
+    if (o.tester_live != last_tlive) {   /* simulated <-> real tester: start a fresh curve */
+        if (last_tlive >= 0) hist_reset();
+        last_tlive = o.tester_live;
+        s_live_wh = 0;
+    }
+    if (o.tester_live) {
+        bool running = o.state == TS_DISCHARGE || o.state == TS_REST;
+        bool was_running = last_tstate == TS_DISCHARGE || last_tstate == TS_REST;
+        if (running && !was_running && o.elapsed_s < 180) {   /* a new test started */
+            hist_reset();
+            s_live_wh = 0;
+        }
+        if (o.state == TS_DISCHARGE && o.current_a < 0)
+            s_live_wh += o.voltage_v * -o.current_a * (TICK_MS / 1000.0f) / 3600.0f;
+        if (running) hist_add(&o);
+        last_tstate = o.state;
+    } else if (!s_sim.done) {
+        hist_add(&o);
+    }
     if (lv_screen_active() == s_scr[TAB_ONLINE]) ui_online_update(&o);
     if (++chart_div >= 4) { chart_div = 0; ui_online_chart_refresh(); }   /* ~2 s */
     frame_refresh(&o);
@@ -449,6 +505,38 @@ void snap_cell(int n)
     bsp_display_unlock();
 }
 
+void snap_blt_once(void)
+{
+    if (blt_usb_state(NULL, NULL) != BLT_USB_CONNECTED) { ESP_LOGW(TAG, "BLTONCE: tester not connected"); return; }
+    static blt_response_t r;
+    static uint8_t blk[BLT_LIVE_LEN];
+    bool was = blt_usb_reads_allowed();
+    blt_usb_allow_reads(true);
+    esp_err_t e = ESP_OK;
+    for (int i = 0; i < 3 && e == ESP_OK; i++) {
+        blt_err_t be = BLT_OK;
+        e = blt_usb_read(BLT_CMD_RI, (uint32_t)(i * 64), 64, &r, &be, 2600);
+        if (e == ESP_OK && r.payload_len == 64) memcpy(blk + i * 64, r.payload, 64);
+        else if (e == ESP_OK) e = ESP_ERR_INVALID_SIZE;
+    }
+    blt_usb_allow_reads(was);
+    if (e != ESP_OK) { ESP_LOGW(TAG, "BLTONCE failed: %s", esp_err_to_name(e)); return; }
+    for (int i = 0; i < BLT_LIVE_LEN; i += 16) ESP_LOG_BUFFER_HEX(TAG, blk + i, 16);
+    blt_live_t l;
+    blt_live_decode(blk, sizeof blk, &l);
+    int first = 0, na = blt_live_alarm_count(&l, &first);
+    ESP_LOGI(TAG, "LIVE: Vbat %.1f V  Vload %.1f V  Ichg %.1f A  Idis %.1f A", l.v_batt, l.v_load, l.i_charge, l.i_discharge);
+    ESP_LOGI(TAG, "LIVE: T %.1f / %.1f / %.1f / %.1f C  flags %04x  out %02x %02x",
+             l.temp_c[0], l.temp_c[1], l.temp_c[2], l.temp_c[3], l.flags, l.outputs1, l.outputs2);
+    ESP_LOGI(TAG, "LIVE: clock %02u:%02u:%02u %02u/%02u/%02u  t_dis %u min  t_chg %u min  pause %u/%u",
+             l.rtc_h, l.rtc_m, l.rtc_s, l.rtc_d, l.rtc_mo, l.rtc_y, l.t_discharge_min, l.t_charge_min,
+             l.t_discharge_pause_min, l.t_charge_pause_min);
+    ESP_LOGI(TAG, "LIVE: Ah present %u  charged %u  discharged %u  eff %u  Vmin %.2f Vmax %.2f",
+             l.ah_present, l.ah_charged, l.ah_discharged, l.efficiency_pct, l.v_min, l.v_max);
+    ESP_LOGI(TAG, "LIVE: state %u (%s)  cycle %u/%u  test %u  alarms %d (first id %d)",
+             l.state, blt_state_name_it(l.state), l.n_charges, l.n_discharges, l.test_no, na, first);
+}
+
 void snap_chart(int mode)
 {
     bsp_display_lock(0);
@@ -516,6 +604,7 @@ void app_main(void)
 
     snap_start();
     blt_usb_start();     /* tester on USB - passive until reads are allowed */
+    blt_live_poll_restore();
     xTaskCreate(blt_poll_task, "blt_poll", 4096, NULL, 4, NULL);
 
     /* Wi-Fi via the C6 runs in its own task so the UI stays live if it stalls */

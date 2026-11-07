@@ -109,6 +109,8 @@ static void snap_task(void *arg)
         else if (strncmp(line, "CHART ", 6) == 0) snap_chart(atoi(line + 6));
         else if (strncmp(line, "CELL ", 5) == 0) snap_cell(atoi(line + 5));
         else if (strncmp(line, "BLTALLOW ", 9) == 0) blt_usb_allow_reads(atoi(line + 9) != 0);
+        else if (strcmp(line, "BLTONCE") == 0) snap_blt_once();
+        else if (strncmp(line, "BLTPOLL ", 8) == 0) blt_live_poll_enable(atoi(line + 8) != 0);
         else if (strncmp(line, "BLT ", 4) == 0) {        /* "BLT RD 000000 0010" - reads only */
             char cmd[3] = { 0 };
             unsigned long addr = 0, len = 0;
