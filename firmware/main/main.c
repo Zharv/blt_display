@@ -41,6 +41,7 @@
 #include "print_job.h"
 #include "doc_print.h"
 #include "test_sum.h"
+#include "sd_store.h"
 #include "blt_archive.h"
 #include "esp_heap_caps.h"
 
@@ -628,6 +629,7 @@ void snap_protocol(bool print, uint16_t cycle)
 static void netw_task(void *arg)
 {
     (void)arg;
+    sd_store_start();                       /* SD card for the archive (optional) */
     if (!netw_start()) {   /* C6 link, co-processor update, Wi-Fi */
         vTaskDelete(NULL);
         return;

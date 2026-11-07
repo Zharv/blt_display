@@ -21,6 +21,7 @@ idf_component_register(
         "blt_archive.c"
         "doc_print.c"
         "test_sum.c"
+        "sd_store.c"
         "ui_archive.c"
         "ui_test.c"
     INCLUDE_DIRS "."
@@ -41,6 +42,8 @@ idf_component_register(
         mdns
         esp_http_client
         nvs_flash
+        fatfs
+        sdmmc
         esp_partition
         esp_driver_uart
         esp_netif
