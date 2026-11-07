@@ -21,6 +21,7 @@
 #include "mdns.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
+#include "freertos/timers.h"
 #include "freertos/task.h"
 
 static const char *TAG = "netw";
@@ -180,8 +181,12 @@ static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data)
     }
 }
 
+static void retry_cb(TimerHandle_t t);
+
 bool netw_start(void)
 {
+    static TimerHandle_t rt;
+    if (!rt && (rt = xTimerCreate("wifi_rt", pdMS_TO_TICKS(30000), pdTRUE, NULL, retry_cb))) xTimerStart(rt, 0);
     s_events = xEventGroupCreate();
     ESP_LOGI(TAG, "heap before hosted: internal %u (largest %u), dma %u, psram %u",
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
@@ -295,6 +300,30 @@ void netw_connect(const char *ssid, const char *pass)
     esp_wifi_disconnect();
     esp_wifi_connect();
     ESP_LOGI(TAG, "connecting to \"%s\"", ssid);
+}
+
+/* Drop and re-join the saved network (e.g. the printer's Wi-Fi Direct after
+ * the printer slept or restarted). */
+void netw_reconnect(void)
+{
+    if (!s_have_creds) return;
+    ESP_LOGW(TAG, "re-joining \"%s\"", s_ssid);
+    s_retry = 0;
+    s_connected = false;
+    if (s_events) xEventGroupClearBits(s_events, BIT_CONNECTED);
+    esp_wifi_disconnect();
+    esp_wifi_connect();
+}
+
+/* after the quick retries ran out (printer off for a while), keep trying
+ * every 30 s so the panel is back on the network when the printer is */
+static void retry_cb(TimerHandle_t t)
+{
+    (void)t;
+    if (s_have_creds && !s_connected && s_retry >= WIFI_RETRY_MAX) {
+        s_retry = 0;
+        esp_wifi_connect();
+    }
 }
 
 void netw_get_ip_str(char *buf, size_t n)

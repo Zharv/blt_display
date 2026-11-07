@@ -3,6 +3,7 @@
 #include "doc.h"
 #include "rtext.h"
 #include "print_job.h"
+#include "bms_ble.h"
 #include "test_sum.h"
 #include "sd_arch.h"
 #include <limits.h>
@@ -13,8 +14,10 @@
 
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "psram_task.h"
 
 static const char *TAG = "doc";
 
@@ -52,8 +55,24 @@ static esp_err_t build_and_print(void)
     if (s_x.cycle != BLT_ARCH_CURRENT) from_sd = (e = sd_arch_load(s_x.cycle, t)) == ESP_OK;
     if (!from_sd) {
         e = blt_archive_fetch(s_x.cycle, t);
+        /* the tester already holds the next (empty) test: print the last one
+         * that has a result */
+        if (e == ESP_OK && t->current && !blt_rec_has_result(&t->rec)) {
+            uint16_t c = t->rec.pr_cycle;
+            esp_err_t e2 = ESP_ERR_NOT_FOUND;
+            for (int k = 1; k <= 8 && e2 != ESP_OK; k++) {
+                uint16_t n = (uint16_t)(c - k);
+                e2 = sd_arch_load(n, t);
+                if (e2 == ESP_OK) { from_sd = true; break; }
+                e2 = blt_archive_fetch(n, t);
+                if (e2 == ESP_OK && !blt_rec_has_result(&t->rec)) e2 = ESP_ERR_NOT_FOUND;
+            }
+            if (e2 == ESP_OK) ESP_LOGI(TAG, "current cycle %u is empty - printing cycle %u", c, t->rec.pr_cycle);
+            else e = ESP_ERR_NOT_FOUND;
+        }
         /* a finished test read from the tester: keep it on the card */
-        if (e == ESP_OK && !(t->current && t->rec.state >= 1 && t->rec.state <= 4)
+        if (e == ESP_OK && !from_sd && blt_rec_has_result(&t->rec)
+            && !(t->current && t->rec.state >= 1 && t->rec.state <= 4)
             && !sd_arch_has(t->rec.pr_test, t->rec.pr_cycle))
             sd_arch_save(t);
     }
@@ -169,23 +188,61 @@ static esp_err_t build_and_print(void)
         ESP_LOGI(TAG, "rendered in %lu ms", (unsigned long)(esp_log_timestamp() - t0));
         char job[48];
         snprintf(job, sizeof job, "Protocol %s", d.number);
+        bms_ble_hold(true);
         e = print_job_send_raster(&r, 300, job);
+        bms_ble_hold(false);
         heap_caps_free(px);
     }
     heap_caps_free(t);
     return e;
 }
 
+/* called from the renderer / encoder: sleep a tick every ~30 ms of work */
+static void doc_yield(void)
+{
+    static int64_t last;
+    int64_t now = esp_timer_get_time();
+    if (now - last > 30000) {
+        vTaskDelay(1);
+        last = esp_timer_get_time();
+    }
+}
+
+static bool s_test_page;
+static TaskHandle_t s_worker;
+
+static esp_err_t test_page(void);
+
+/* one long-lived worker: page render + URF encoding take seconds of CPU, so
+ * it runs on core 1 below the UI (LVGL is pinned to core 0, priority 4), with
+ * its stack in PSRAM (internal RAM is kept for the Wi-Fi/BLE transport) */
 static void doc_task(void *arg)
 {
     (void)arg;
     static bool font_ok;
-    if (!font_ok) font_ok = rtext_init(ttf_start, (size_t)(ttf_end - ttf_start));
-    esp_err_t e = font_ok ? build_and_print() : ESP_FAIL;
-    ESP_LOGI(TAG, "protocol %s: %s", s_print ? "print" : "dump", esp_err_to_name(e));
-    if (s_done) s_done(e);
-    s_busy = false;
-    vTaskDelete(NULL);
+    for (;;) {
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        if (!font_ok) font_ok = rtext_init(ttf_start, (size_t)(ttf_end - ttf_start));
+        raster_yield = doc_yield;
+        esp_err_t e;
+        if (s_test_page) {
+            e = test_page();
+            ESP_LOGI(TAG, "test page: %s", esp_err_to_name(e));
+        } else {
+            e = font_ok ? build_and_print() : ESP_FAIL;
+            ESP_LOGI(TAG, "protocol %s: %s", s_print ? "print" : "dump", esp_err_to_name(e));
+            if (s_done) s_done(e);
+        }
+        raster_yield = NULL;
+        s_busy = false;
+    }
+}
+
+static bool kick_worker(void)
+{
+    if (!s_worker && psram_task(doc_task, "doc", 12288, NULL, 2, &s_worker, 1) != pdPASS) return false;
+    xTaskNotifyGive(s_worker);
+    return true;
 }
 
 bool doc_print_protocol(const doc_extra_t *x, bool print, void (*done)(esp_err_t))
@@ -195,6 +252,36 @@ bool doc_print_protocol(const doc_extra_t *x, bool print, void (*done)(esp_err_t
     s_x = *x;
     s_print = print;
     s_done = done;
-    if (xTaskCreate(doc_task, "doc", 12288, NULL, 4, NULL) != pdPASS) { s_busy = false; return false; }
+    s_test_page = false;
+    if (!kick_worker()) { s_busy = false; return false; }
     return true;
+}
+
+/* dev console PRINTTEST: a page with text and a gray gradient (~400 KB of
+ * URF), to test the printer path without tester data */
+static esp_err_t test_page(void)
+{
+    uint8_t *px = heap_caps_malloc((size_t)DOC_A4_W * DOC_A4_H, MALLOC_CAP_SPIRAM);
+    if (!px) return ESP_ERR_NO_MEM;
+    raster_t r;
+    raster_init(&r, px, DOC_A4_W, DOC_A4_H);
+    raster_clear(&r, 255);
+    rtext_draw(&r, 250, 200, "Тестова сторінка BLT-display", 70, 0, true);
+    for (int y = 500; y < 1400; y++) {
+        for (int x = 250; x < 2230; x++) px[(size_t)y * DOC_A4_W + x] = (uint8_t)(((x - 250) * 255 / 1980 + (y & 3)) & 0xFF);
+        RASTER_YIELD();
+    }
+    bms_ble_hold(true);
+    esp_err_t e = print_job_send_raster(&r, 300, "BLT test page");
+    bms_ble_hold(false);
+    heap_caps_free(px);
+    return e;
+}
+
+void doc_print_test_page(void)
+{
+    if (s_busy) return;
+    s_busy = true;
+    s_test_page = true;
+    if (!kick_worker()) s_busy = false;
 }

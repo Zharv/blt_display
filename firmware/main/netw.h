@@ -18,6 +18,8 @@ bool netw_start(void);
 
 bool netw_is_connected(void);
 bool netw_wait_connected(uint32_t timeout_ms);
+/* drop and re-join the saved network */
+void netw_reconnect(void);
 
 typedef struct {
     char    ssid[33];

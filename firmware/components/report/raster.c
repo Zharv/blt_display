@@ -1,5 +1,7 @@
 #include "raster.h"
 
+#include <string.h>
+
 /* font8x8_basic (public domain, Daniel Hepper) for ASCII 0x20..0x7F.
  * Each glyph = 8 rows; within a row bit0 is the leftmost pixel. */
 static const uint8_t FONT8X8[96][8] = {
@@ -106,9 +108,15 @@ void raster_init(raster_t *r, uint8_t *buf, int w, int h)
     r->w = w; r->h = h; r->px = buf;
 }
 
+void (*raster_yield)(void);
+
 void raster_clear(raster_t *r, uint8_t gray)
 {
-    for (int i = 0; i < r->w * r->h; i++) r->px[i] = gray;
+    for (int y = 0; y < r->h; y += 64) {      /* word-wide stores, in bands */
+        int n = (r->h - y < 64 ? r->h - y : 64) * r->w;
+        memset(r->px + (size_t)y * r->w, gray, (size_t)n);
+        RASTER_YIELD();
+    }
 }
 
 void raster_set(raster_t *r, int x, int y, uint8_t gray)

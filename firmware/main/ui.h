@@ -33,6 +33,7 @@ typedef struct {
     uint8_t  rated_v;       /* programmed on the tester (0 = unknown) */
     uint8_t  i_set_a;       /* programmed discharge current */
     uint8_t  alarms;        /* active tester alarms */
+    uint8_t  alarm_id;      /* the first one (1..48) */
 
     /* BMS */
     bool     bms_present;

@@ -22,6 +22,7 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "psram_task.h"
 
 #define LIST_W   600
 #define ARCH_MAX 150
@@ -51,9 +52,20 @@ static bool tester_ready(void)
     return blt_usb_reads_allowed() && blt_usb_state(NULL, NULL) == BLT_USB_CONNECTED;
 }
 
+static void list_once(void);
+static TaskHandle_t s_list_worker;
+
 static void list_task(void *arg)
 {
     (void)arg;
+    for (;;) {
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        list_once();
+    }
+}
+
+static void list_once(void)
+{
     esp_err_t e = ESP_OK;
     s_tester_ok = false;
     if (tester_ready()) {
@@ -87,7 +99,6 @@ static void list_task(void *arg)
     s_view_n = n;
     s_result = (e == ESP_OK || n > 0) ? 1 : -1;
     s_busy = false;
-    vTaskDelete(NULL);
 }
 
 static void start_refresh(void)
@@ -103,7 +114,11 @@ static void start_refresh(void)
     s_prog_done = 0;
     s_prog_total = 0;
     lv_label_set_text(s_status, tr(S_AR_READING_START));
-    xTaskCreate(list_task, "blt_list", 6144, NULL, 4, NULL);
+    if (!s_list_worker && psram_task(list_task, "blt_list", 6144, NULL, 4, &s_list_worker, tskNO_AFFINITY) != pdPASS) {
+        s_busy = false;
+        return;
+    }
+    xTaskNotifyGive(s_list_worker);
 }
 
 static void refresh_cb(lv_event_t *e) { (void)e; start_refresh(); }

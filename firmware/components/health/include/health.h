@@ -20,7 +20,7 @@ typedef enum {
     HR_IDLE = 0,        /* no test running: nothing to judge */
     HR_OK,
     HR_NO_BMS,          /* discharging without BMS data */
-    HR_ALARM,           /* tester alarm active               a = count */
+    HR_ALARM,           /* tester alarm active               a = count, b = first id */
     HR_CELL_LOW,        /* lowest cell under the limit       a = V, cell */
     HR_DELTA,           /* imbalance too high                a = mV, cell */
     HR_DELTA_GROW,      /* imbalance grew since the start    a = from mV, b = to mV, cell */
@@ -34,6 +34,7 @@ typedef struct {
     bool     discharging;     /* tester in DISCHARGE (pauses are not judged) */
     uint32_t elapsed_s;       /* discharge time */
     int      alarms;          /* active tester alarms */
+    int      alarm_id;        /* the first of them (1..48), 0 = none */
     float    v_tester;        /* V */
     float    i_tester;        /* A, magnitude */
     float    i_set;           /* A, programmed discharge current (0 = unknown) */

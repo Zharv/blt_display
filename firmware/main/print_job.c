@@ -9,6 +9,7 @@
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 #include "esp_http_client.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -18,7 +19,7 @@ static const char *TAG = "print";
 #define PAGE_H 1400
 
 /* Encode r as URF and POST one IPP Print-Job. */
-esp_err_t print_job_send_raster(const raster_t *r, uint32_t dpi, const char *job_name)
+static esp_err_t send_once(const raster_t *r, uint32_t dpi, const char *job_name)
 {
     char host[64], resource[64];
     uint16_t port = 631;
@@ -56,10 +57,39 @@ esp_err_t print_job_send_raster(const raster_t *r, uint32_t dpi, const char *job
     };
     esp_http_client_handle_t cli = esp_http_client_init(&cfg);
     esp_http_client_set_header(cli, "Content-Type", "application/ipp");
-    esp_http_client_set_post_field(cli, (const char *)body, (int)body_len);
 
-    esp_err_t err = esp_http_client_perform(cli);
-    int status = esp_http_client_get_status_code(cli);
+    ESP_LOGI(TAG, "heap: internal %u (largest %u), dma %u (largest %u)",
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL));
+    /* send in chunks so a stall shows where it happens */
+    esp_err_t err = esp_http_client_open(cli, (int)body_len);
+    size_t sent = 0;
+    int64_t t0 = esp_timer_get_time(), last_log = t0;
+    while (err == ESP_OK && sent < body_len) {
+        int chunk = body_len - sent > 4096 ? 4096 : (int)(body_len - sent);
+        int w = esp_http_client_write(cli, (const char *)body + sent, chunk);
+        if (w <= 0) { ESP_LOGE(TAG, "write stalled at %u / %u bytes (%d)", (unsigned)sent, (unsigned)body_len, w); err = ESP_ERR_HTTP_WRITE_DATA; break; }
+        sent += (size_t)w;
+        int64_t now = esp_timer_get_time();
+        if (now - last_log > 2000000) {
+            last_log = now;
+            ESP_LOGI(TAG, "sent %u / %u bytes (%.1f KB/s)", (unsigned)sent, (unsigned)body_len,
+                     sent / 1024.0 / ((now - t0) / 1e6));
+        }
+    }
+    int status = 0;
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "sent %u bytes in %.1f s, waiting for the reply", (unsigned)sent, (esp_timer_get_time() - t0) / 1e6);
+        if (esp_http_client_fetch_headers(cli) < 0) err = ESP_ERR_HTTP_FETCH_HEADER;
+        status = esp_http_client_get_status_code(cli);
+        /* the IPP reply: status-code is bytes 2..3 */
+        uint8_t rep[64];
+        int rn = esp_http_client_read(cli, (char *)rep, sizeof rep);
+        if (rn >= 4) ESP_LOGI(TAG, "IPP reply status 0x%02x%02x", rep[2], rep[3]);
+    }
+    esp_http_client_close(cli);
     if (err == ESP_OK) {
         ESP_LOGI(TAG, "printer %s:%u -> HTTP %d", host, (unsigned)port, status);
     } else {
@@ -68,7 +98,20 @@ esp_err_t print_job_send_raster(const raster_t *r, uint32_t dpi, const char *job
     esp_http_client_cleanup(cli);
     heap_caps_free(body);
 
-    return (err == ESP_OK && status == 200) ? ESP_OK : ESP_FAIL;
+    if (err != ESP_OK) return ESP_ERR_TIMEOUT;     /* no answer: network / printer asleep */
+    return status == 200 ? ESP_OK : ESP_FAIL;
+}
+
+esp_err_t print_job_send_raster(const raster_t *r, uint32_t dpi, const char *job_name)
+{
+    if (!netw_is_connected()) {                    /* e.g. retries ran out while the printer was off */
+        netw_reconnect();
+        netw_wait_connected(20000);
+    }
+    /* no forced Wi-Fi re-join on a stalled upload: that dropped the link (and
+     * the BMS) for nothing; the network layer reconnects on a real loss */
+    esp_err_t e = send_once(r, dpi, job_name);
+    return e == ESP_ERR_TIMEOUT ? ESP_FAIL : e;
 }
 
 esp_err_t print_job_send(const report_data_t *d)
@@ -95,6 +138,8 @@ static void log_attrs(const uint8_t *b, int n)
         "printer-resolution-default", "media-default", "media-ready", "media-supported",
         "print-color-mode-supported", "pwg-raster-document-type-supported",
         "print-quality-supported", "media-top-margin-supported", "media-left-margin-supported",
+        "printer-state", "printer-state-reasons", "printer-state-message", "queued-job-count",
+        "printer-is-accepting-jobs",
     };
     if (n < 8) return;
     ESP_LOGI(TAG, "IPP status 0x%02x%02x", b[2], b[3]);

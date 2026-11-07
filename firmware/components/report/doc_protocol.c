@@ -34,6 +34,7 @@ void doc_duration_ua(uint32_t minutes, char *out, int n)
 
 static void thick_line(raster_t *r, int x0, int y0, int x1, int y1, int th, uint8_t g)
 {
+    RASTER_YIELD();
     for (int a = -th / 2; a < th - th / 2; a++)
         for (int b = -th / 2; b < th - th / 2; b++)
             raster_line(r, x0 + a, y0 + b, x1 + a, y1 + b, g);

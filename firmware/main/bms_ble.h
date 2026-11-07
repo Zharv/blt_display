@@ -74,6 +74,10 @@ uint32_t bms_ble_frames(void);
 
 const char *bms_ble_state_str(bms_ble_state_t s);
 
+/* Suspend the "no data -> re-request / reconnect" watchdog (printing: the
+ * shared C6 radio starves BLE during the Wi-Fi upload). */
+void bms_ble_hold(bool on);
+
 /* kind of the connected / target BMS (bms_kind_t) */
 uint8_t bms_ble_kind(void);
 

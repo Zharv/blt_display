@@ -17,6 +17,11 @@ typedef struct {
     uint8_t *px;   /* w*h bytes, row-major */
 } raster_t;
 
+/* Long renders call this now and then so the caller can let other tasks run
+ * (firmware: a short vTaskDelay). NULL = never. */
+extern void (*raster_yield)(void);
+#define RASTER_YIELD() do { if (raster_yield) raster_yield(); } while (0)
+
 /* Bind an existing buffer (w*h bytes) as a raster. */
 void raster_init(raster_t *r, uint8_t *buf, int w, int h);
 void raster_clear(raster_t *r, uint8_t gray);

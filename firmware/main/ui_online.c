@@ -1,5 +1,6 @@
 #include "ui.h"
 #include "health.h"
+#include "blt_rec.h"
 #include "ui_style.h"
 #include "fonts.h"
 #include "i18n.h"
@@ -762,7 +763,12 @@ void ui_online_health(const health_in_t *in, const health_out_t *h)
     case HR_IDLE:       set_txt(s_hs_reason, "%s · %s", chem, tr(S_HR_IDLE)); break;
     case HR_OK:         set_txt(s_hs_reason, "%s · %s", chem, tr(S_HR_OK)); break;
     case HR_NO_BMS:     set_txt(s_hs_reason, "%s", tr(S_HR_NO_BMS)); break;
-    case HR_ALARM:      set_txt(s_hs_reason, "%s", tr(S_HR_ALARM)); break;
+    case HR_ALARM: {
+        const char *an = blt_alarm_name_ua((int)h->b);
+        if (an[0]) set_txt(s_hs_reason, "%s: %s", tr(S_HR_ALARM), an);
+        else set_txt(s_hs_reason, "%s №%d", tr(S_HR_ALARM), (int)h->b);
+        break;
+    }
     case HR_CELL_LOW:   set_txt(s_hs_reason, tr(S_HR_CELL_LOW), h->cell, h->a); break;
     case HR_DELTA:      set_txt(s_hs_reason, tr(S_HR_DELTA), h->a, h->cell); break;
     case HR_DELTA_GROW: set_txt(s_hs_reason, tr(S_HR_DELTA_GROW), h->a, h->b, h->cell); break;

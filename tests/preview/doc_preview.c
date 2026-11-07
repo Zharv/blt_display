@@ -2,6 +2,7 @@
  *   doc_preview <font.ttf> <out.pgm> */
 #include "doc.h"
 #include "rtext.h"
+#include "urf.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -98,6 +99,7 @@ int main(int argc, char **argv)
     raster_init(&r, px, DOC_A4_W, DOC_A4_H);
     raster_clear(&r, 255);
     doc_protocol_render(&d, &r);
+    printf("URF size: %zu bytes\n", urf_encode(&r, 300, NULL, 0));
     f = fopen(argv[2], "wb");
     fprintf(f, "P5\n%d %d\n255\n", DOC_A4_W, DOC_A4_H);
     fwrite(px, 1, sizeof px, f);

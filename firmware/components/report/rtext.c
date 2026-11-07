@@ -88,6 +88,7 @@ static int draw_n(raster_t *r, int x, int y, const char *s, const char *end, int
     static int buf_cap;
     while (*s && (!end || s < end)) {
         uint32_t c = utf8_next(&s);
+        RASTER_YIELD();
         if (prev) fx += sc * stbtt_GetCodepointKernAdvance(&s_font, (int)prev, (int)c);
         int adv, lsb;
         stbtt_GetCodepointHMetrics(&s_font, (int)c, &adv, &lsb);

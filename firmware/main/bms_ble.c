@@ -282,12 +282,24 @@ static void daly_feed(const uint8_t *d, size_t n)
 
 /* --------------------------------------------------------- GATT set-up */
 
+/* while printing, the C6 radio is busy with the Wi-Fi upload and BLE
+ * notifications stall: don't kick or drop the BMS then */
+static volatile bool s_hold;
+static volatile int64_t s_hold_end_us;
+
+void bms_ble_hold(bool on)
+{
+    s_hold = on;
+    if (!on) s_hold_end_us = esp_timer_get_time();
+}
+
 static void kick_cb(void *arg)
 {
     (void)arg;
-    if (s_conn == BLE_HS_CONN_HANDLE_NONE) return;
+    if (s_conn == BLE_HS_CONN_HANDLE_NONE || s_hold) return;
     if (s_kind == BMS_KIND_DALY) {             /* Daly answers each request: poll */
         int64_t last = s_data_us > s_link_us ? s_data_us : s_link_us;
+        if (s_hold_end_us > last) last = s_hold_end_us;
         if (esp_timer_get_time() - last > 15000000) {
             ESP_LOGW(TAG, "Daly: no data for 15 s - reconnecting");
             esp_timer_stop(s_kick_t);
@@ -302,6 +314,7 @@ static void kick_cb(void *arg)
      * command makes the JK beep), and after 15 s of silence drop the link - the
      * disconnect handler reconnects. */
     int64_t last = s_data_us > s_link_us ? s_data_us : s_link_us;
+    if (s_hold_end_us > last) last = s_hold_end_us;
     int64_t quiet = esp_timer_get_time() - last;
     if (quiet > 15000000) {
         ESP_LOGW(TAG, "no data for %d s - reconnecting (since last frame: %lu notifies, %lu B, "

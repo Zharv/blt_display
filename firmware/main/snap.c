@@ -3,6 +3,7 @@
 #include "blt_usb.h"
 #include "print_job.h"
 #include "sd_store.h"
+#include "doc_print.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -126,6 +127,7 @@ static void snap_task(void *arg)
         else if (strcmp(line, "BMSOFF") == 0) snap_bms_disconnect();
         else if (strcmp(line, "IPPATTR") == 0) print_job_query_attrs();
         else if (strcmp(line, "SD") == 0) sd_store_selftest();
+        else if (strcmp(line, "PRINTTEST") == 0) doc_print_test_page();
         else if (strcmp(line, "SDLS") == 0) sd_store_ls(NULL);
         else if (strncmp(line, "SDLS ", 5) == 0) sd_store_ls(line + 5);
         else if (strcmp(line, "PROTO") == 0) snap_protocol(false, 0xFFFF);

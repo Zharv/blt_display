@@ -135,7 +135,7 @@ void health_eval(const health_in_t *in, health_out_t *o)
     }
 
     if (!judge) return;
-    if (in->alarms > 0) cand(o, HL_STOP, HR_ALARM, 0, (float)in->alarms, 0);
+    if (in->alarms > 0) cand(o, HL_STOP, HR_ALARM, 0, (float)in->alarms, (float)in->alarm_id);
     if (in->bms && in->has_mos) cand(o, above(in->temp_mos, MOS_Y, MOS_R), HR_MOS, 0, in->temp_mos, 0);
     if (in->bms && in->v_bms > 0 && in->v_tester > 0) {
         float dv = fabsf(in->v_tester - in->v_bms);

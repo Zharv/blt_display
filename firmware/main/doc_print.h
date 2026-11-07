@@ -30,6 +30,9 @@ typedef struct {
  * for the host preview. done (may be NULL) is called from that task. */
 bool doc_print_protocol(const doc_extra_t *x, bool print, void (*done)(esp_err_t));
 
+/* dev console: print a test page (no tester data needed) */
+void doc_print_test_page(void);
+
 #ifdef __cplusplus
 }
 #endif

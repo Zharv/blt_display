@@ -14,6 +14,7 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "psram_task.h"
 
 static const char *TAG = "sd_arch";
 
@@ -32,14 +33,22 @@ static void dir_of(uint16_t test, uint16_t cycle, char *out, size_t n)
     snprintf(out, n, SD_DIR "/T%u_%u", (unsigned)test, (unsigned)cycle);
 }
 
+/* saved = a record with a discharge result (an empty one may be overwritten) */
 bool sd_arch_has(uint16_t test, uint16_t cycle)
 {
     if (!sd_store_ready()) return false;
     char p[64];
     dir_of(test, cycle, p, sizeof p);
     strlcat(p, "/record.bin", sizeof p);
-    struct stat st;
-    return stat(p, &st) == 0 && st.st_size == BLT_REC_LEN;
+    uint8_t raw[BLT_REC_LEN];
+    FILE *f = fopen(p, "rb");
+    if (!f) return false;
+    size_t r = fread(raw, 1, sizeof raw, f);
+    fclose(f);
+    if (r != sizeof raw) return false;
+    blt_rec_t rec;
+    blt_rec_decode(raw, sizeof raw, &rec);
+    return blt_rec_has_result(&rec);
 }
 
 /* "12.3" with a decimal comma */
@@ -72,6 +81,7 @@ static void write_info(const char *dir, const blt_test_t *t, const test_sum_t *s
 esp_err_t sd_arch_save(const blt_test_t *t)
 {
     if (!sd_store_ready()) return ESP_ERR_INVALID_STATE;
+    if (!blt_rec_has_result(&t->rec)) return ESP_ERR_INVALID_ARG;   /* nothing to keep */
     char dir[48], p[80];
     dir_of(t->rec.pr_test, t->rec.pr_cycle, dir, sizeof dir);
     mkdir(dir, 0775);
@@ -197,6 +207,7 @@ int sd_arch_list(blt_arch_entry_t *out, int max)
         if (r != sizeof raw) continue;
         memset(&out[n], 0, sizeof out[n]);
         blt_rec_decode(raw, sizeof raw, &out[n].rec);
+        if (!blt_rec_has_result(&out[n].rec)) continue;
         out[n].n = out[n].rec.pr_cycle;
         out[n].on_sd = true;
         n++;
@@ -322,7 +333,7 @@ static void sync_task(void *arg)
 
 void sd_arch_request_sync(void)
 {
-    if (!s_sync_task) xTaskCreate(sync_task, "sd_sync", 6144, NULL, 3, &s_sync_task);
+    if (!s_sync_task) psram_task(sync_task, "sd_sync", 6144, NULL, 3, &s_sync_task, tskNO_AFFINITY);
     if (s_sync_task) xTaskNotifyGive(s_sync_task);
 }
 

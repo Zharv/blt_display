@@ -43,6 +43,7 @@
 #include "test_sum.h"
 #include "sd_store.h"
 #include "sd_arch.h"
+#include "psram_task.h"
 #include "blt_archive.h"
 #include "esp_heap_caps.h"
 
@@ -206,7 +207,9 @@ static void fill_sample(online_sample_t *o)
          * not a fault: it is set during a normal discharge */
         blt_live_t la = l;
         la.alarms[3] &= (uint8_t)~(1u << 3);
-        o->alarms = (uint8_t)blt_live_alarm_count(&la, NULL);
+        int first = 0;
+        o->alarms = (uint8_t)blt_live_alarm_count(&la, &first);
+        o->alarm_id = (uint8_t)first;
         o->state = l.state == BLT_ST_DISCHARGE || l.state == BLT_ST_CHARGE ? TS_DISCHARGE :
                    l.state == BLT_ST_DISCHARGE_PAUSE || l.state == BLT_ST_CHARGE_PAUSE ? TS_REST :
                    l.state == BLT_ST_END ? TS_DONE : TS_IDLE;
@@ -428,6 +431,7 @@ static void health_tick(const online_sample_t *o)
     in.discharging = discharging;
     in.elapsed_s = o->elapsed_s;
     in.alarms = o->alarms;
+    in.alarm_id = o->alarm_id;
     in.v_tester = o->tester_live ? o->voltage_v : 0;
     in.i_tester = o->tester_live ? fabsf(o->current_a) : 0;
     in.i_set = o->tester_live ? o->i_set_a : 0;
@@ -444,6 +448,29 @@ static void health_tick(const online_sample_t *o)
     in.delta0_mv = s_hb.delta0_mv;
     in.temp0 = s_hb.temp0_dc != INT16_MIN ? s_hb.temp0_dc / 10.0f : tbat;
     in.chem = (chem_t)s_chem;
+
+    /* judge the 10-second average, not single readings: a cell value moving by
+     * 1-2 mV around a limit must not flip the verdict (20 ticks of 0.5 s) */
+    {
+        enum { AVG_N = 10000 / TICK_MS };
+        static float hv[AVG_N][7];
+        static int hn, hi;
+        if (!in.bms) hn = 0;                      /* BMS lost: start over */
+        else {
+            float *r = hv[hi];
+            r[0] = in.cell_min_mv; r[1] = in.cell_max_mv; r[2] = in.i_tester;
+            r[3] = in.temp_bat; r[4] = in.temp_mos; r[5] = in.v_tester; r[6] = in.v_bms;
+            hi = (hi + 1) % AVG_N;
+            if (hn < AVG_N) hn++;
+            float s[7] = { 0 };
+            for (int k = 0; k < hn; k++) for (int j = 0; j < 7; j++) s[j] += hv[k][j];
+            in.cell_min_mv = (uint16_t)lroundf(s[0] / hn);
+            in.cell_max_mv = (uint16_t)lroundf(s[1] / hn);
+            in.i_tester = s[2] / hn;
+            in.temp_bat = s[3] / hn; in.temp_mos = s[4] / hn;
+            in.v_tester = s[5] / hn; in.v_bms = s[6] / hn;
+        }
+    }
     health_eval(&in, &out);
 
     /* debounce the verdict (values near a limit must not make it flicker):
@@ -818,6 +845,8 @@ void app_main(void)
         .double_buffer = BSP_LCD_DRAW_BUFF_DOUBLE,
         .flags = { .buff_dma = true, .buff_spiram = true, .sw_rotate = true }
     };
+    /* LVGL owns core 0; heavy background work (printing) runs on core 1 */
+    cfg.lvgl_port_cfg.task_affinity = 0;
     /* the panel is 800x1280 portrait; the bench is used in landscape (PPA rotates) */
     lv_display_t *disp = bsp_display_start_with_config(&cfg);
     bsp_display_lock(0);
@@ -862,8 +891,9 @@ void app_main(void)
     snap_start();
     blt_usb_start();     /* tester on USB - passive until reads are allowed */
     blt_live_poll_restore();
-    xTaskCreate(blt_poll_task, "blt_poll", 6144, NULL, 4, NULL);
-    xTaskCreate(sd_log_task, "sd_log", 6144, NULL, 2, NULL);
+    test_sum_load();                     /* NVS -> RAM before any PSRAM-stack task reads it */
+    psram_task(blt_poll_task, "blt_poll", 6144, NULL, 4, NULL, tskNO_AFFINITY);
+    psram_task(sd_log_task, "sd_log", 6144, NULL, 2, NULL, tskNO_AFFINITY);
 
     /* Wi-Fi via the C6 runs in its own task so the UI stays live if it stalls */
     xTaskCreate(netw_task, "netw", 6144, NULL, 5, NULL);

@@ -27,6 +27,8 @@ typedef struct {
     char     bms[20];         /* BMS name */
 } test_sum_t;
 
+/* load the NVS copy into RAM (call once from an internal-RAM task) */
+void test_sum_load(void);
 bool test_sum_get(uint16_t test, test_sum_t *out);
 void test_sum_put(const test_sum_t *s);
 
