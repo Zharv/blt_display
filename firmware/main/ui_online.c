@@ -75,7 +75,9 @@ static uint32_t s_ax0, s_ax1 = 60;
 static int32_t s_rng[2][2] = { { 0, 100 }, { 0, 100 } };
 static lv_draw_buf_t *s_plot_buf;
 
-static lv_obj_t *s_chart, *s_seg[2], *s_leg[4], *s_sc_l, *s_sc_r, *s_sc_b;
+static lv_obj_t *s_chart, *s_seg[2], *s_leg[4], *s_sc_l, *s_sc_r;
+#define XL_N 8
+static lv_obj_t *s_xl[XL_N];        /* minute labels under the plot */
 static pser_t *s_ser_ut, *s_ser_ub, *s_ser_i, *s_ser_d, *s_ser_c[UI_MAX_CELLS];
 
 static pser_t *ps_add(lv_color_t c, int axis)
@@ -423,15 +425,24 @@ void ui_online_chart_refresh(void)
      * joined half-way), rounded to a nice step */
     uint32_t t_beg = n ? hist_at(0)->t_s : 0;
     uint32_t t_end = n ? hist_at(n - 1)->t_s : 0;
-    int m0 = (int)(t_beg / 60), m1 = (int)((t_end + 59) / 60);
-    if (m1 <= m0) m1 = m0 + 1;
-    int tstep = nice_step(m1 - m0);
-    int tmin = (m0 / tstep) * tstep;
-    int tmax = ((m1 + tstep - 1) / tstep) * tstep;
-    if (tmax <= tmin) tmax = tmin + tstep;
-    scale_range(s_sc_b, tmin, tmax, (tmax - tmin) / tstep + 1);
-    s_ax0 = (uint32_t)tmin * 60u;
-    s_ax1 = (uint32_t)tmax * 60u;
+    if (t_end < t_beg + 60) t_end = t_beg + 60;
+    /* the curve fills the whole width: the axis is exactly the recorded span,
+     * minute labels sit at the round values inside it */
+    s_ax0 = t_beg;
+    s_ax1 = t_end;
+    {
+        int span_m = (int)((t_end - t_beg) / 60);
+        int tstep = nice_step(span_m < 1 ? 1 : span_m);
+        int m = (int)((t_beg + 60u * tstep - 1) / (60u * tstep)) * tstep;
+        int li = 0;
+        for (; li < XL_N && (uint32_t)m * 60u <= t_end; li++, m += tstep) {
+            int x = CHART_X + (int)((int64_t)((uint32_t)m * 60u - t_beg) * (CHART_W - 1) / (t_end - t_beg));
+            set_txt(s_xl[li], "%d", m);
+            if (lv_obj_get_x(s_xl[li]) != x - 30) lv_obj_set_x(s_xl[li], x - 30);
+            set_hidden(s_xl[li], false);
+        }
+        for (; li < XL_N; li++) set_hidden(s_xl[li], true);
+    }
 
     if (n < 2) {
         fill_none(s_ser_ut); fill_none(s_ser_ub); fill_none(s_ser_i); fill_none(s_ser_d);
@@ -750,9 +761,15 @@ lv_obj_t *ui_online_create(void)
 
     s_sc_l = mk_scale(cc, LV_SCALE_MODE_VERTICAL_LEFT, CHART_X - 56, CHART_Y, 56, CHART_H);
     s_sc_r = mk_scale(cc, LV_SCALE_MODE_VERTICAL_RIGHT, CHART_X + CHART_W, CHART_Y, 56, CHART_H);
-    s_sc_b = mk_scale(cc, LV_SCALE_MODE_HORIZONTAL_BOTTOM, CHART_X, CHART_Y + CHART_H, CHART_W, 34);
+    for (int i = 0; i < XL_N; i++) {
+        s_xl[i] = mk_label(cc, "", 16, C_SUB);
+        lv_obj_set_width(s_xl[i], 60);
+        lv_obj_set_style_text_align(s_xl[i], LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_set_pos(s_xl[i], CHART_X - 30, CHART_Y + CHART_H + 8);
+        lv_obj_add_flag(s_xl[i], LV_OBJ_FLAG_HIDDEN);
+    }
     lv_obj_t *mn = mk_label(cc, tr(S_U_MIN), 16, C_SUB);
-    lv_obj_set_pos(mn, CHART_X + CHART_W + 14, CHART_Y + CHART_H + 10);
+    lv_obj_set_pos(mn, CHART_X + CHART_W + 22, CHART_Y + CHART_H + 12);
 
     s_mode = MODE_DISCHARGE;
     show_mode_series();

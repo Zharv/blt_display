@@ -9,13 +9,16 @@
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 #include "esp_http_client.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 static const char *TAG = "print";
 
 #define PAGE_W 1000
 #define PAGE_H 1400
 
-esp_err_t print_job_send(const report_data_t *d)
+/* Encode r as URF and POST one IPP Print-Job. */
+esp_err_t print_job_send_raster(const raster_t *r, uint32_t dpi, const char *job_name)
 {
     char host[64], resource[64];
     uint16_t port = 631;
@@ -28,37 +31,28 @@ esp_err_t print_job_send(const report_data_t *d)
         return ESP_ERR_NOT_FOUND;
     }
 
-    /* render report -> grayscale raster (PSRAM) */
-    uint8_t *px = heap_caps_malloc((size_t)PAGE_W * PAGE_H, MALLOC_CAP_SPIRAM);
-    if (!px) return ESP_ERR_NO_MEM;
-    raster_t r;
-    raster_init(&r, px, PAGE_W, PAGE_H);
-    raster_clear(&r, 255);
-    report_render(d, &r);
-
     /* IPP Print-Job header + URF document in one contiguous body */
     char uri[256];
     snprintf(uri, sizeof uri, "ipp://%s:%u%s", host, (unsigned)port, resource);
     uint8_t ipp[512];
     size_t ipp_len = ipp_build_print_job(ipp, sizeof ipp, 1, uri, "blt-display",
-                                         "image/urf", "BLT test report");
-    size_t urf_len = urf_encode(&r, (uint32_t)CONFIG_BLT_PRINT_DPI, NULL, 0);
+                                         "image/urf", job_name);
+    size_t urf_len = urf_encode(r, dpi, NULL, 0);
     size_t body_len = ipp_len + urf_len;
 
     uint8_t *body = heap_caps_malloc(body_len, MALLOC_CAP_SPIRAM);
-    if (!body) { heap_caps_free(px); return ESP_ERR_NO_MEM; }
+    if (!body) return ESP_ERR_NO_MEM;
     memcpy(body, ipp, ipp_len);
-    urf_encode(&r, (uint32_t)CONFIG_BLT_PRINT_DPI, body + ipp_len, urf_len);
-    heap_caps_free(px);
+    urf_encode(r, dpi, body + ipp_len, urf_len);
 
     char url[256];
     snprintf(url, sizeof url, "http://%s:%u%s", host, (unsigned)port, resource);
-    ESP_LOGI(TAG, "printing to %s (%u bytes)", url, (unsigned)body_len);
+    ESP_LOGI(TAG, "printing %dx%d @%u dpi to %s (%u bytes)", r->w, r->h, (unsigned)dpi, url, (unsigned)body_len);
 
     esp_http_client_config_t cfg = {
         .url = url,
         .method = HTTP_METHOD_POST,
-        .timeout_ms = 20000,
+        .timeout_ms = 30000,
     };
     esp_http_client_handle_t cli = esp_http_client_init(&cfg);
     esp_http_client_set_header(cli, "Content-Type", "application/ipp");
@@ -75,4 +69,101 @@ esp_err_t print_job_send(const report_data_t *d)
     heap_caps_free(body);
 
     return (err == ESP_OK && status == 200) ? ESP_OK : ESP_FAIL;
+}
+
+esp_err_t print_job_send(const report_data_t *d)
+{
+    /* render report -> grayscale raster (PSRAM) */
+    uint8_t *px = heap_caps_malloc((size_t)PAGE_W * PAGE_H, MALLOC_CAP_SPIRAM);
+    if (!px) return ESP_ERR_NO_MEM;
+    raster_t r;
+    raster_init(&r, px, PAGE_W, PAGE_H);
+    raster_clear(&r, 255);
+    report_render(d, &r);
+    esp_err_t e = print_job_send_raster(&r, (uint32_t)CONFIG_BLT_PRINT_DPI, "BLT test report");
+    heap_caps_free(px);
+    return e;
+}
+
+/* ---------------------------------------------------- printer capabilities */
+
+static void log_attrs(const uint8_t *b, int n)
+{
+    static const char *want[] = {
+        "printer-make-and-model", "document-format-supported", "urf-supported",
+        "pwg-raster-document-resolution-supported", "printer-resolution-supported",
+        "printer-resolution-default", "media-default", "media-ready", "media-supported",
+        "print-color-mode-supported", "pwg-raster-document-type-supported",
+        "print-quality-supported", "media-top-margin-supported", "media-left-margin-supported",
+    };
+    if (n < 8) return;
+    ESP_LOGI(TAG, "IPP status 0x%02x%02x", b[2], b[3]);
+    int i = 8;
+    char name[64] = "";
+    while (i < n) {
+        uint8_t tag = b[i++];
+        if (tag == IPP_TAG_END) break;
+        if (tag < 0x10) continue;                       /* group delimiter */
+        if (i + 2 > n) break;
+        int nl = (b[i] << 8) | b[i + 1]; i += 2;
+        if (i + nl + 2 > n) break;
+        if (nl) { int k = nl < 63 ? nl : 63; memcpy(name, b + i, k); name[k] = 0; }
+        i += nl;
+        int vl = (b[i] << 8) | b[i + 1]; i += 2;
+        if (i + vl > n) break;
+        const uint8_t *v = b + i;
+        i += vl;
+        bool hit = false;
+        for (size_t w = 0; w < sizeof want / sizeof want[0]; w++) if (!strcmp(name, want[w])) hit = true;
+        if (!hit) continue;
+        if (tag == IPP_TAG_INTEGER || tag == IPP_TAG_ENUM) {
+            int32_t x = (int32_t)((v[0] << 24) | (v[1] << 16) | (v[2] << 8) | v[3]);
+            ESP_LOGI(TAG, "  %s = %ld", name, (long)x);
+        } else if (tag == 0x32 && vl == 9) {           /* resolution */
+            ESP_LOGI(TAG, "  %s = %ldx%ld u%d", name,
+                     (long)((v[0] << 24) | (v[1] << 16) | (v[2] << 8) | v[3]),
+                     (long)((v[4] << 24) | (v[5] << 16) | (v[6] << 8) | v[7]), v[8]);
+        } else if (tag >= 0x40) {
+            ESP_LOGI(TAG, "  %s = %.*s", name, vl, (const char *)v);
+        } else {
+            ESP_LOGI(TAG, "  %s (tag 0x%02x, %d bytes)", name, tag, vl);
+        }
+    }
+}
+
+static void query_task(void *arg)
+{
+    char host[64], resource[64], uri[192], url[192];
+    uint16_t port = 631;
+    if (!netw_is_connected() || !netw_resolve_printer(host, sizeof host, &port, resource, sizeof resource)) {
+        ESP_LOGW(TAG, "attrs: no printer");
+        vTaskDelete(NULL);
+    }
+    snprintf(uri, sizeof uri, "ipp://%s:%u%s", host, (unsigned)port, resource);
+    snprintf(url, sizeof url, "http://%s:%u%s", host, (unsigned)port, resource);
+    uint8_t req[384];
+    size_t rl = ipp_build_get_printer_attributes(req, sizeof req, 7, uri, "blt-display");
+    const int cap = 64 * 1024;
+    uint8_t *resp = heap_caps_malloc(cap, MALLOC_CAP_SPIRAM);
+    esp_http_client_config_t cfg = { .url = url, .method = HTTP_METHOD_POST, .timeout_ms = 10000 };
+    esp_http_client_handle_t cli = esp_http_client_init(&cfg);
+    esp_http_client_set_header(cli, "Content-Type", "application/ipp");
+    int got = 0;
+    if (resp && esp_http_client_open(cli, (int)rl) == ESP_OK) {
+        esp_http_client_write(cli, (const char *)req, (int)rl);
+        esp_http_client_fetch_headers(cli);
+        int r;
+        while (got < cap && (r = esp_http_client_read(cli, (char *)resp + got, cap - got)) > 0) got += r;
+    }
+    ESP_LOGI(TAG, "attrs: HTTP %d, %d bytes", esp_http_client_get_status_code(cli), got);
+    esp_http_client_close(cli);
+    esp_http_client_cleanup(cli);
+    if (got > 0) log_attrs(resp, got);
+    heap_caps_free(resp);
+    vTaskDelete(NULL);
+}
+
+void print_job_query_attrs(void)
+{
+    xTaskCreate(query_task, "ippq", 8192, NULL, 4, NULL);
 }

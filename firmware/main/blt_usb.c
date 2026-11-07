@@ -298,6 +298,26 @@ esp_err_t blt_usb_read_live(blt_live_t *out)
     return blt_live_decode(blk, sizeof blk, out) ? ESP_OK : ESP_FAIL;
 }
 
+/* Read len bytes (RI/RD/RB) in 64-byte frames, quietly, 2 attempts per frame. */
+esp_err_t blt_usb_read_block(blt_cmd_t cmd, uint32_t addr, uint8_t *dst, uint16_t len)
+{
+    static blt_response_t r;
+    esp_err_t e = ESP_OK;
+    s_quiet = true;
+    for (uint16_t off = 0; off < len && e == ESP_OK; off += 64) {
+        uint16_t n = len - off > 64 ? 64 : len - off;
+        for (int tries = 0; tries < 2; tries++) {
+            blt_err_t be = BLT_OK;
+            e = blt_usb_read(cmd, addr + off, n, &r, &be, 2600);
+            if (e == ESP_OK && r.payload_len != n) e = ESP_ERR_INVALID_SIZE;
+            if (e == ESP_OK) break;
+        }
+        if (e == ESP_OK) memcpy(dst + off, r.payload, n);
+    }
+    s_quiet = false;
+    return e;
+}
+
 /* ------------------------------------------------------------- the one write */
 
 static volatile bool s_write_armed;

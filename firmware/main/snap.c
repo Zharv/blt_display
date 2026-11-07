@@ -1,6 +1,7 @@
 #include "snap.h"
 #include "ui_frame.h"
 #include "blt_usb.h"
+#include "print_job.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -122,6 +123,9 @@ static void snap_task(void *arg)
         else if (strcmp(line, "BMS") == 0) snap_bms_connect(NULL);
         else if (strncmp(line, "BMS ", 4) == 0) snap_bms_connect(line + 4);
         else if (strcmp(line, "BMSOFF") == 0) snap_bms_disconnect();
+        else if (strcmp(line, "IPPATTR") == 0) print_job_query_attrs();
+        else if (strcmp(line, "PROTO") == 0) snap_protocol(false);
+        else if (strcmp(line, "PROTOPRINT") == 0) snap_protocol(true);
 
     }
 }

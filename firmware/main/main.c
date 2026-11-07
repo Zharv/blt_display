@@ -38,18 +38,16 @@
 #include "blt_usb.h"
 #include "netw.h"
 #include "print_job.h"
-#include "report.h"
+#include "doc_print.h"
+#include "blt_archive.h"
+#include "esp_heap_caps.h"
 
 static const char *TAG = "blt";
 
 #define TICK_MS         500
 
-/* print snapshot (kept alive for the print task) */
 static volatile bool s_printing;
-static report_data_t s_rep;
-static uint16_t      s_rep_cells[UI_MAX_CELLS];
-static float         s_rep_v[HIST_MAX], s_rep_i[HIST_MAX], s_rep_d[HIST_MAX];
-static char          s_rep_date[32], s_rep_batt[40];
+static float s_temp_start = -999;    /* BMS battery temperature when the test started */
 
 static float s_live_wh;              /* energy of the running test, integrated in tick_cb */
 /* The RI block has whole Ah and whole minutes. Between two tester updates the
@@ -108,6 +106,24 @@ static void blt_poll_task(void *arg)
         }
         if (fails) ESP_LOGI(TAG, "tester live read OK after %d failures", fails);
         fails = 0;
+        /* joined a running test: fill the chart with what the tester recorded
+         * so far (read-only RI/RD), once per test, a few reads after it
+         * appeared so tick_cb has settled its history first */
+        static int live_reads;
+        static uint16_t seeded_test = 0xFFFF;
+        live_reads++;
+        if ((l.state == BLT_ST_DISCHARGE || l.state == BLT_ST_DISCHARGE_PAUSE) &&
+            l.test_no != seeded_test && live_reads > 4) {
+            seeded_test = l.test_no;
+            blt_test_t *bt = heap_caps_malloc(sizeof *bt, MALLOC_CAP_SPIRAM);
+            if (bt && blt_archive_fetch_current(bt) == ESP_OK && bt->n > 1) {
+                bsp_display_lock(0);
+                int k = hist_prepend_recorder(bt->t_min, bt->v, bt->i, bt->n);
+                bsp_display_unlock();
+                ESP_LOGI(TAG, "chart: %d points from the tester recorder (test %u)", k, l.test_no);
+            }
+            heap_caps_free(bt);
+        }
         taskENTER_CRITICAL(&s_live_mux);
         s_live = l;
         s_live_us = esp_timer_get_time();
@@ -287,7 +303,18 @@ static void tick_cb(lv_timer_t *t)
         }
         if (o.state == TS_DISCHARGE && o.current_a < 0)
             s_live_wh += o.voltage_v * -o.current_a * (TICK_MS / 1000.0f) / 3600.0f;
-        if (running && t_synced) hist_add(&o);
+        if (running && t_synced) {
+            if (hist_count() == 0) {
+                s_temp_start = -999;
+                if (o.bms_live && o.temp_count && o.elapsed_s < 300) {
+                    int nt = o.temp_count > 2 ? 2 : o.temp_count;   /* T1, T2 (not MOS) */
+                    float sum = 0;
+                    for (int k = 0; k < nt; k++) sum += o.temp_dc[k] / 10.0f;
+                    s_temp_start = sum / nt;
+                }
+            }
+            hist_add(&o);
+        }
 
         /* BMS of the running test: re-join it after a restart, forget it when
          * the test is over (the next battery has its own BMS) */
@@ -333,10 +360,8 @@ static void toast_locked(const char *msg)
     bsp_display_unlock();
 }
 
-static void print_task(void *arg)
+static void print_done(esp_err_t e)
 {
-    (void)arg;
-    esp_err_t e = print_job_send(&s_rep);
     ESP_LOGI(TAG, "print result: %s", esp_err_to_name(e));
     char msg[64];
     snprintf(msg, sizeof msg, "%s  %s", e == ESP_OK ? LV_SYMBOL_OK : LV_SYMBOL_WARNING,
@@ -344,69 +369,63 @@ static void print_task(void *arg)
                 e == ESP_ERR_INVALID_STATE ? S_PR_NO_WIFI : S_PR_FAILED));
     toast_locked(msg);
     s_printing = false;
-    vTaskDelete(NULL);
 }
 
-/* Runs in the LVGL context (tab-bar button). */
+/* BMS snapshot for the protocol. LVGL context (or display locked). */
+static void doc_extra_fill(doc_extra_t *x)
+{
+    online_sample_t o = {0};
+    fill_sample(&o);
+    memset(x, 0, sizeof *x);
+    x->temp_start = s_temp_start;
+    x->live_ah = o.tester_live ? o.capacity_ah : 0;
+    if (o.bms_live && o.cell_count) {
+        x->bms = true;
+        strlcpy(x->bms_name, o.bms_name, sizeof x->bms_name);
+        x->cells = o.cell_count;
+        x->cell_min_mv = o.cell_min_mv;
+        x->cell_max_mv = o.cell_max_mv;
+        x->imbalance_mv = o.imbalance_mv;
+        x->soc_pct = o.soc_pct;
+        uint16_t worst = 0;
+        for (int i = 0; i < hist_count(); i++) {
+            const hist_pt_t *p = hist_at(i);
+            uint16_t lo = 0xFFFF, hi = 0;
+            for (int c = 0; c < p->n; c++) {
+                if (p->cell[c] < lo) lo = p->cell[c];
+                if (p->cell[c] > hi) hi = p->cell[c];
+            }
+            if (p->n >= 2 && hi - lo > worst) worst = hi - lo;
+        }
+        x->imbalance_max_mv = worst;
+    }
+}
+
+/* Runs in the LVGL context (tab-bar button): print the test protocol. */
 static void on_print(void)
 {
     if (s_printing) return;
     ESP_LOGI(TAG, "PRINT tapped");
-    online_sample_t o = {0};
-    fill_sample(&o);
-    for (int i = 0; i < o.cell_count && i < UI_MAX_CELLS; i++) s_rep_cells[i] = o.cell_mv[i];
-
-    /* curves from the history */
-    int n = hist_count();
-    float vmin = 1e9f, vmax = 0, imax = 1, min_v = o.voltage_v, max_t = o.temp_c;
-    for (int i = 0; i < n; i++) {
-        const hist_pt_t *p = hist_at(i);
-        s_rep_v[i] = p->v_t;
-        s_rep_i[i] = fabsf(p->i_t);
-        uint16_t lo = 0xFFFF, hi = 0;
-        for (int c = 0; c < p->n; c++) {
-            if (p->cell[c] < lo) lo = p->cell[c];
-            if (p->cell[c] > hi) hi = p->cell[c];
-        }
-        s_rep_d[i] = p->n ? (float)(hi - lo) : 0;
-        if (p->v_t < vmin) vmin = p->v_t;
-        if (p->v_t > vmax) vmax = p->v_t;
-        if (s_rep_i[i] > imax) imax = s_rep_i[i];
-        if (p->v_t < min_v) min_v = p->v_t;
-    }
-    if (n == 0) { vmin = 40; vmax = 55; }
-    vmin = floorf(vmin - 1.0f);
-    vmax = ceilf(vmax + 1.0f);
-
-    struct tm tm;
-    if (clock_valid(&tm)) strftime(s_rep_date, sizeof s_rep_date, "%Y-%m-%d %H:%M", &tm);
-    else strlcpy(s_rep_date, "n/a", sizeof s_rep_date);
-    if (o.battery_id[0] && o.bms_live)
-        snprintf(s_rep_batt, sizeof s_rep_batt, "%.20s  %uS", o.battery_id, o.cell_count);
-    else if (o.battery_id[0]) strlcpy(s_rep_batt, o.battery_id, sizeof s_rep_batt);
-    else if (o.bms_live) snprintf(s_rep_batt, sizeof s_rep_batt, "%uS  %.20s", o.cell_count, o.bms_name);
-    else strlcpy(s_rep_batt, "-", sizeof s_rep_batt);
-
-    s_rep = (report_data_t){
-        .title = "BATTERY TEST REPORT",
-        .date = s_rep_date,
-        .operator_name = "-",
-        .battery_id = s_rep_batt,
-        .nominal_v = 0, .nominal_ah = 0, .discharge_a = o.current_a < 0 ? -o.current_a : 0,   /* settings block not read yet */
-        .discharged_ah = o.capacity_ah, .duration_s = o.elapsed_s,
-        .min_voltage_v = min_v, .max_temp_c = max_t, .cutoff_v = 0, /* settings block not read yet */
-        .curve_v = s_rep_v, .curve_i = s_rep_i, .curve_n = n,
-        .curve_vmin = vmin, .curve_vmax = vmax, .curve_imax = ceilf(imax * 1.2f),
-        .curve_delta_mv = s_rep_d,
-        .bms_present = o.bms_present, .cell_mv = s_rep_cells, .cell_count = o.cell_count,
-        .cell_min_mv = o.cell_min_mv, .cell_max_mv = o.cell_max_mv,
-        .imbalance_mv = o.imbalance_mv, .soc_pct = o.soc_pct,
-    };
+    doc_extra_t x;
+    doc_extra_fill(&x);
+    if (!doc_print_protocol(&x, true, print_done)) return;
     s_printing = true;
     char msg[48];
     snprintf(msg, sizeof msg, "%s  %s", LV_SYMBOL_FILE, tr(S_PR_PRINTING));
     ui_frame_toast(msg);
-    xTaskCreate(print_task, "print", 8192, NULL, 4, NULL);
+}
+
+/* dev console: PROTO (log the page data) / PROTOPRINT */
+void snap_protocol(bool print)
+{
+    bsp_display_lock(0);
+    if (print) on_print();
+    else {
+        doc_extra_t x;
+        doc_extra_fill(&x);
+        doc_print_protocol(&x, false, NULL);
+    }
+    bsp_display_unlock();
 }
 
 /* ----------------------------------------------------------- bring-up -- */

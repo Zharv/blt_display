@@ -27,6 +27,10 @@ void hist_reset(void);
 void hist_add(const online_sample_t *s);
 int  hist_count(void);
 const hist_pt_t *hist_at(int i);
+/* Put the tester recorder's samples (minutes since the start, V, |I|) that are
+ * older than the first stored point in front of the history - the curve of a
+ * test that was already running when the panel started. Returns points added. */
+int hist_prepend_recorder(const uint16_t *t_min, const float *v, const float *i_abs, int n);
 
 #ifdef __cplusplus
 }

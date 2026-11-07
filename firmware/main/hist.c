@@ -49,3 +49,26 @@ const hist_pt_t *hist_at(int i)
 {
     return (s_buf && i >= 0 && i < s_n) ? &s_buf[i] : NULL;
 }
+
+int hist_prepend_recorder(const uint16_t *t_min, const float *v, const float *i_abs, int n)
+{
+    if (!s_buf || n <= 0) return 0;
+    uint32_t first = s_n ? s_buf[0].t_s : UINT32_MAX;
+    int m = 0;
+    while (m < n && (uint32_t)t_min[m] * 60u < first) m++;
+    int room = HIST_MAX - s_n - 1;
+    if (m == 0 || room <= 0) return 0;
+    int step = (m + room - 1) / room;
+    int k = (m + step - 1) / step;
+    memmove(s_buf + k, s_buf, (size_t)s_n * sizeof(hist_pt_t));
+    for (int j = 0; j < k; j++) {
+        int src = j * step;
+        hist_pt_t *p = &s_buf[j];
+        memset(p, 0, sizeof *p);
+        p->t_s = (uint32_t)t_min[src] * 60u;
+        p->v_t = v[src];
+        p->i_t = -i_abs[src];
+    }
+    s_n += k;
+    return k;
+}

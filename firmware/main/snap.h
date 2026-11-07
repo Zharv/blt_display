@@ -30,6 +30,7 @@ void blt_live_poll_enable(bool on);
 bool blt_live_poll_enabled(void);
 /* "CELL n": toggle the highlight of cell n (1-based) as a tap would. */
 void snap_cell(int n);
+void snap_protocol(bool print);   /* PROTO / PROTOPRINT */
 /* "BMS": scan and connect to the first JK found; "BMSOFF": disconnect. */
 void snap_bms_connect(const char *name);   /* NULL: Daly preferred, else first JK */
 void snap_bms_disconnect(void);

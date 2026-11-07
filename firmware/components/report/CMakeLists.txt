@@ -3,5 +3,7 @@ idf_component_register(
         "raster.c"
         "report.c"
         "urf.c"
+        "rtext.c"
+        "doc_protocol.c"
     INCLUDE_DIRS "include"
 )
