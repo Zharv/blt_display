@@ -374,6 +374,36 @@ static int slot_range(int k, int from, int n, int *to)
     return from;
 }
 
+/* Display smoothing: a slot that has samples is drawn as the mean over a
+ * time window centred on it - at least 20 s, or 3 slots on long tests - so the
+ * tester's 0.1 V steps and load ripple don't make a ragged line. The stored
+ * history stays raw. */
+typedef struct { int lo, hi; uint32_t half; } swin_t;
+
+static uint32_t slot_center(int k)
+{
+    uint64_t span = s_ax1 > s_ax0 ? s_ax1 - s_ax0 : 1;
+    return s_ax0 + (uint32_t)(span * (uint64_t)(2 * k + 1) / (2 * CHART_PTS));
+}
+
+static void swin_init(swin_t *w)
+{
+    uint32_t slot = (s_ax1 - s_ax0) / CHART_PTS;
+    uint32_t width = 3 * slot < 20 ? 20 : 3 * slot;
+    w->lo = w->hi = 0;
+    w->half = width / 2;
+}
+
+/* samples [w->lo, w->hi) lie within the window around slot k (k increasing) */
+static void swin_move(swin_t *w, int k, int n)
+{
+    uint32_t c = slot_center(k);
+    uint32_t a = c > w->half ? c - w->half : 0, b = c + w->half;
+    while (w->lo < n && hist_at(w->lo)->t_s < a) w->lo++;
+    if (w->hi < w->lo) w->hi = w->lo;
+    while (w->hi < n && hist_at(w->hi)->t_s <= b) w->hi++;
+}
+
 void ui_online_chart_refresh(void)
 {
     if (!s_chart || lv_obj_get_screen(s_chart) != lv_screen_active()) return;
@@ -433,21 +463,25 @@ void ui_online_chart_refresh(void)
         scale_range(s_sc_r, 0, ihi, ihi / ist + 1);
 
         ps_points(CHART_PTS);
+        swin_t w;
+        swin_init(&w);
         for (int k = 0, j = 0; k < CHART_PTS; k++) {
             int to, from = slot_range(k, j, n, &to);
             j = to;
-            float vt = 0, vb = 0, ia = 0, ts = 0;
+            swin_move(&w, k, n);
+            float vt = 0, vb = 0, ia = 0;
             int c = 0, cb = 0;
-            for (int i = from; i < to; i++) {
-                const hist_pt_t *p = hist_at(i);
-                vt += p->v_t; ia += fabsf(p->i_t); ts += p->t_s; c++;
-                if (p->v_b > 0) { vb += p->v_b; cb++; }
-            }
+            if (to > from)
+                for (int i = w.lo; i < w.hi; i++) {
+                    const hist_pt_t *p = hist_at(i);
+                    vt += p->v_t; ia += fabsf(p->i_t); c++;
+                    if (p->v_b > 0) { vb += p->v_b; cb++; }
+                }
             if (!c) {
                 ps_set(s_ser_ut, k, PT_NONE); ps_set(s_ser_ub, k, PT_NONE); ps_set(s_ser_i, k, PT_NONE);
                 continue;
             }
-            s_pt_t[k] = (uint32_t)(ts / c);
+            s_pt_t[k] = slot_center(k);
             ps_set(s_ser_ut, k, (int32_t)(vt / c * 1000));
             ps_set(s_ser_ub, k, cb ? (int32_t)(vb / cb * 1000) : PT_NONE);
             ps_set(s_ser_i, k, (int32_t)(ia / c * 10));
@@ -511,19 +545,21 @@ void ui_online_chart_refresh(void)
             if (s_cell_shown[c] != use) { ps_hide(s_ser_c[c], !use); s_cell_shown[c] = (int8_t)use; }
         }
         ps_points(CHART_PTS);
+        swin_t w;
+        swin_init(&w);
         for (int k = 0, j = 0; k < CHART_PTS; k++) {
             int to, from = slot_range(k, j, n, &to);
             j = to;
-            float dev[UI_MAX_CELLS] = { 0 }, ts = 0;
+            swin_move(&w, k, n);
+            float dev[UI_MAX_CELLS] = { 0 };
             int cnt = 0;
-            for (int i = from; i < to; i++) {
+            for (int i = (to > from ? w.lo : 0); i < (to > from ? w.hi : 0); i++) {
                 const hist_pt_t *p = hist_at(i);
                 if (p->n < 2 || p->n < ncell) continue;     /* sample without full cell data */
                 float mean = 0;
                 for (int c = 0; c < p->n; c++) mean += p->cell[c];
                 mean /= p->n;
                 for (int c = 0; c < ncell; c++) dev[c] += p->cell[c] - mean;
-                ts += p->t_s;
                 cnt++;
             }
             if (!cnt) {
@@ -531,7 +567,7 @@ void ui_online_chart_refresh(void)
                 ps_set(s_ser_d, k, PT_NONE);
                 continue;
             }
-            s_pt_t[k] = (uint32_t)(ts / cnt);
+            s_pt_t[k] = slot_center(k);
             for (int c = 0; c < ncell; c++) ps_set(s_ser_c[c], k, (int32_t)(dev[c] / cnt * 10));
             ps_set(s_ser_d, k, PT_NONE);
         }
