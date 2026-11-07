@@ -64,6 +64,7 @@ typedef struct {
     int8_t   tmax_c[4];         /* 0x5B..0x5E */
     uint8_t  alarms[6];         /* 0x5F..0x64 bitmap, id = 8*byte + bit + 1 */
     uint8_t  state;             /* 0x6B blt_state_t */
+    uint16_t pr_cycle;          /* 0x6E recorder cycle index */
     uint16_t test_no;           /* 0x70 */
     char     battery_id[17];    /* 0x76..0x85 ASCII serial, trailing spaces trimmed
                                    (copy of the RD 0x40 ID block, e.g. "202611070001";

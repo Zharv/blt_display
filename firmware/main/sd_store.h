@@ -20,6 +20,8 @@ bool sd_store_ready(void);
 void sd_store_space(uint32_t *total_mb, uint32_t *free_mb);
 /* dev console: log card info, write/read/delete a probe file in SD_DIR */
 void sd_store_selftest(void);
+/* dev console: list SD_DIR or a sub-folder of it */
+void sd_store_ls(const char *sub);
 
 #ifdef __cplusplus
 }

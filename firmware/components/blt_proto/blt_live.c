@@ -40,6 +40,7 @@ bool blt_live_decode(const uint8_t *b, size_t len, blt_live_t *o)
     memcpy(o->alarms, b + 0x5F, 6);
     o->state = b[0x6B];
     o->test_no = u16le(b + 0x70);
+    o->pr_cycle = u16le(b + 0x6E);
     o->rated_ah = u16le(b + 0x1F);
     o->rated_v = b[0x22];
     o->i_set = b[0x23];

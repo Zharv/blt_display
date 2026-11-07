@@ -31,6 +31,8 @@ const hist_pt_t *hist_at(int i);
  * older than the first stored point in front of the history - the curve of a
  * test that was already running when the panel started. Returns points added. */
 int hist_prepend_recorder(const uint16_t *t_min, const float *v, const float *i_abs, int n);
+/* same for full points (time-ordered) */
+int hist_prepend_points(const hist_pt_t *pts, int n);
 
 #ifdef __cplusplus
 }

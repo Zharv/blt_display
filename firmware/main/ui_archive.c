@@ -12,6 +12,8 @@
 #include "blt_usb.h"
 #include "blt_archive.h"
 #include "test_sum.h"
+#include "sd_arch.h"
+#include "sd_store.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -23,12 +25,17 @@
 
 #define LIST_W   600
 #define ARCH_MAX 150
+#define VIEW_MAX 600
 
 static lv_obj_t *s_scr, *s_status, *s_list, *s_refresh;
 static lv_obj_t *s_d_title, *s_d_hint, *s_d_rows, *s_d_print;
 
-static blt_arch_entry_t *s_cache;      /* PSRAM, ARCH_MAX */
+static blt_arch_entry_t *s_cache;      /* tester records (PSRAM, ARCH_MAX), kept between refreshes */
 static int s_cache_n;
+static blt_arch_entry_t *s_sd;         /* tests on the SD card (PSRAM, VIEW_MAX) */
+static blt_arch_entry_t *s_view;       /* what the list shows: both merged, newest first */
+static int s_view_n, s_sd_n;
+static volatile bool s_tester_ok;      /* the last refresh reached the tester */
 static int s_sel = -1;
 
 /* worker state (written by the task, read by the LVGL timer) */
@@ -39,27 +46,58 @@ static int64_t s_loaded_us;
 
 static void progress(int done, int total) { s_prog_done = done; s_prog_total = total; }
 
-static void list_task(void *arg)
-{
-    (void)arg;
-    esp_err_t e = blt_archive_list(s_cache, &s_cache_n, ARCH_MAX, progress);
-    s_result = e == ESP_OK ? 1 : -1;
-    s_busy = false;
-    vTaskDelete(NULL);
-}
-
 static bool tester_ready(void)
 {
     return blt_usb_reads_allowed() && blt_usb_state(NULL, NULL) == BLT_USB_CONNECTED;
 }
 
+static void list_task(void *arg)
+{
+    (void)arg;
+    esp_err_t e = ESP_OK;
+    s_tester_ok = false;
+    if (tester_ready()) {
+        e = blt_archive_list(s_cache, &s_cache_n, ARCH_MAX, progress);
+        s_tester_ok = e == ESP_OK;
+    }
+    s_sd_n = sd_arch_list(s_sd, VIEW_MAX);
+    /* merge: tester records (newest first) + tests only on the card */
+    int n = 0;
+    if (s_tester_ok)
+        for (int k = 0; k < s_cache_n && n < VIEW_MAX; k++) {
+            s_view[n] = s_cache[k];
+            s_view[n].on_sd = false;
+            for (int j = 0; j < s_sd_n; j++)
+                if (s_sd[j].n == s_cache[k].n) { s_view[n].on_sd = true; break; }
+            n++;
+        }
+    int base = n;
+    for (int j = 0; j < s_sd_n && n < VIEW_MAX; j++) {
+        bool dup = false;
+        for (int k = 0; k < base; k++) if (s_view[k].n == s_sd[j].n) { dup = true; break; }
+        if (!dup) s_view[n++] = s_sd[j];
+    }
+    /* newest first overall (cycle index grows with time) */
+    for (int a = 1; a < n; a++) {
+        blt_arch_entry_t x = s_view[a];
+        int b = a - 1;
+        while (b >= 0 && s_view[b].n < x.n) { s_view[b + 1] = s_view[b]; b--; }
+        s_view[b + 1] = x;
+    }
+    s_view_n = n;
+    s_result = (e == ESP_OK || n > 0) ? 1 : -1;
+    s_busy = false;
+    vTaskDelete(NULL);
+}
+
 static void start_refresh(void)
 {
     if (s_busy) return;
-    if (!tester_ready()) {
+    if (!tester_ready() && !sd_store_ready()) {
         lv_label_set_text(s_status, tr(S_AR_NO_TESTER));
         return;
     }
+    if (tester_ready()) sd_arch_request_sync();     /* copy new finished tests to the card */
     s_busy = true;
     s_result = 0;
     s_prog_done = 0;
@@ -103,7 +141,7 @@ static void add_row(const char *label, const char *value)
 static void show_detail(void)
 {
     lv_obj_clean(s_d_rows);
-    if (s_sel < 0 || s_sel >= s_cache_n) {
+    if (s_sel < 0 || s_sel >= s_view_n) {
         lv_obj_add_flag(s_d_print, LV_OBJ_FLAG_HIDDEN);
         lv_obj_clear_flag(s_d_hint, LV_OBJ_FLAG_HIDDEN);
         lv_label_set_text(s_d_title, "");
@@ -111,7 +149,7 @@ static void show_detail(void)
     }
     lv_obj_add_flag(s_d_hint, LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(s_d_print, LV_OBJ_FLAG_HIDDEN);
-    const blt_arch_entry_t *e = &s_cache[s_sel];
+    const blt_arch_entry_t *e = &s_view[s_sel];
     const blt_rec_t *r = &e->rec;
     char v[96];
     lv_label_set_text_fmt(s_d_title, "%s %u", tr(S_AR_TEST), r->pr_test);
@@ -134,8 +172,9 @@ static void show_detail(void)
     if (na) snprintf(v, sizeof v, "%d · %s", na, blt_alarm_name_ua(a1));
     else snprintf(v, sizeof v, "%s", tr(S_AR_NONE));
     add_row(tr(S_AR_ALARMS), v);
+    add_row(tr(S_AR_WHERE), tr(e->on_sd && e->on_tester ? S_AR_WHERE_BOTH : e->on_sd ? S_AR_WHERE_SD : S_AR_WHERE_TESTER));
     test_sum_t s;
-    if (test_sum_get(r->pr_test, &s) && s.cells) {
+    if ((test_sum_get(r->pr_test, &s) || sd_arch_get_sum(r->pr_cycle, &s)) && s.cells) {
         snprintf(v, sizeof v, "%.16s · %uS · Δ %u→%u %s", s.bms, s.cells, s.delta0_mv, s.delta_max_mv, tr(S_U_MV));
         add_row("BMS", v);
     } else {
@@ -157,25 +196,25 @@ static void item_cb(lv_event_t *e)
 static void print_cb(lv_event_t *e)
 {
     (void)e;
-    if (s_sel < 0 || s_sel >= s_cache_n) return;
-    const blt_arch_entry_t *a = &s_cache[s_sel];
+    if (s_sel < 0 || s_sel >= s_view_n) return;
+    const blt_arch_entry_t *a = &s_view[s_sel];
     app_print_protocol(a->current ? BLT_ARCH_CURRENT : a->n);
 }
 
 static void rebuild_list(void)
 {
     lv_obj_clean(s_list);
-    uint16_t keep = s_sel >= 0 && s_sel < s_cache_n ? s_cache[s_sel].n : 0xFFFF;
+    uint16_t keep = s_sel >= 0 && s_sel < s_view_n ? s_view[s_sel].n : 0xFFFF;
     s_sel = -1;
-    for (int i = 0; i < s_cache_n; i++) {
-        const blt_arch_entry_t *e = &s_cache[i];
+    for (int i = 0; i < s_view_n; i++) {
+        const blt_arch_entry_t *e = &s_view[i];
         const blt_rec_t *r = &e->rec;
         char t[160];
         snprintf(t, sizeof t, "%02u.%02u.20%02u %02u:%02u    %s\n%u %s  ·  %u:%02u  ·  %s %u%s%s",
                  r->dis_d, r->dis_mo, r->dis_y, r->dis_h, r->dis_mi, r->battery_id[0] ? r->battery_id : "—",
                  r->ah_dis, tr(S_U_AH), r->t_dis_min / 60, r->t_dis_min % 60, tr(S_AR_TEST_SHORT), r->pr_test,
                  running(e) ? "  ·  " : "", running(e) ? tr(S_AR_RUNNING) : "");
-        lv_obj_t *b = ui_list_item(s_list, LV_SYMBOL_FILE, t, running(e) ? C_GREEN : C_TXT, item_cb, (void *)(intptr_t)i);
+        lv_obj_t *b = ui_list_item(s_list, e->on_sd ? LV_SYMBOL_SD_CARD : LV_SYMBOL_FILE, t, running(e) ? C_GREEN : C_TXT, item_cb, (void *)(intptr_t)i);
         lv_obj_set_style_text_font(b, font_ua(20), 0);
         if (e->n == keep) s_sel = i;
     }
@@ -190,10 +229,21 @@ static void poll_cb(lv_timer_t *t)
         if (s_prog_total) lv_label_set_text_fmt(s_status, tr(S_AR_READING), s_prog_done, s_prog_total);
         return;
     }
+    static bool was_syncing;
+    int sd_done, sd_total;
+    bool syncing = sd_arch_sync_busy(&sd_done, &sd_total);
+    if (syncing && sd_total) {
+        lv_label_set_text_fmt(s_status, tr(S_AR_SYNCING), sd_done, sd_total);
+    } else if (was_syncing && !syncing && lv_screen_active() == s_scr) {
+        start_refresh();                    /* show the SD marks of what was just copied */
+    }
+    was_syncing = syncing;
     if (s_result == 1) {
         s_result = 0;
         s_loaded_us = esp_timer_get_time();
-        lv_label_set_text_fmt(s_status, tr(S_AR_COUNT), s_cache_n);
+        int on_sd = 0;
+        for (int k = 0; k < s_view_n; k++) on_sd += s_view[k].on_sd;
+        lv_label_set_text_fmt(s_status, tr(s_tester_ok ? S_AR_COUNT : S_AR_COUNT_SD), s_view_n, on_sd);
         rebuild_list();
     } else if (s_result == -1) {
         s_result = 0;
@@ -204,6 +254,8 @@ static void poll_cb(lv_timer_t *t)
 lv_obj_t *ui_archive_create(void)
 {
     s_cache = heap_caps_calloc(ARCH_MAX, sizeof *s_cache, MALLOC_CAP_SPIRAM);
+    s_sd = heap_caps_calloc(VIEW_MAX, sizeof *s_sd, MALLOC_CAP_SPIRAM);
+    s_view = heap_caps_calloc(VIEW_MAX, sizeof *s_view, MALLOC_CAP_SPIRAM);
     s_scr = ui_screen();
     lv_obj_add_event_cb(s_scr, screen_cb, LV_EVENT_SCREEN_LOADED, NULL);
 
@@ -227,7 +279,7 @@ lv_obj_t *ui_archive_create(void)
     s_d_rows = lv_obj_create(d);
     lv_obj_remove_style_all(s_d_rows);
     lv_obj_set_pos(s_d_rows, 20, 60);
-    lv_obj_set_size(s_d_rows, dw - 40, 9 * 34 + 8);
+    lv_obj_set_size(s_d_rows, dw - 40, 10 * 34 + 8);
     lv_obj_set_flex_flow(s_d_rows, LV_FLEX_FLOW_COLUMN);
     lv_obj_t *note = ui_label(d, tr(S_AR_GRAPH_NOTE), 16, C_MUTED);
     lv_obj_set_width(note, dw - 40);

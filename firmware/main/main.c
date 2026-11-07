@@ -42,6 +42,7 @@
 #include "doc_print.h"
 #include "test_sum.h"
 #include "sd_store.h"
+#include "sd_arch.h"
 #include "blt_archive.h"
 #include "esp_heap_caps.h"
 
@@ -119,13 +120,40 @@ static void blt_poll_task(void *arg)
             l.test_no != seeded_test && live_reads > 4) {
             seeded_test = l.test_no;
             blt_test_t *bt = heap_caps_malloc(sizeof *bt, MALLOC_CAP_SPIRAM);
-            if (bt && blt_archive_fetch_current(bt) == ESP_OK && bt->n > 1) {
-                bsp_display_lock(0);
-                int k = hist_prepend_recorder(bt->t_min, bt->v, bt->i, bt->n);
-                bsp_display_unlock();
-                ESP_LOGI(TAG, "chart: %d points from the tester recorder (test %u)", k, l.test_no);
+            const int LOGMAX = 4000;
+            hist_pt_t *lg = heap_caps_malloc((LOGMAX + BLT_ARCH_MAX) * sizeof(hist_pt_t), MALLOC_CAP_SPIRAM);
+            if (bt && lg && blt_archive_fetch_current(bt) == ESP_OK) {
+                /* the panel's own log on the SD card (has the cells) */
+                int nl = sd_arch_read_log(l.test_no, bt->rec.pr_cycle, lg, LOGMAX);
+                /* + recorder minutes not covered by the log (merge, time order) */
+                hist_pt_t *m = lg + LOGMAX;
+                int nm = 0, j = 0;
+                hist_pt_t *all = heap_caps_malloc((LOGMAX + BLT_ARCH_MAX) * sizeof(hist_pt_t), MALLOC_CAP_SPIRAM);
+                if (all) {
+                    for (int k = 0; k < bt->n; k++) {
+                        uint32_t ts = (uint32_t)bt->t_min[k] * 60u;
+                        bool covered = false;
+                        while (j < nl && lg[j].t_s + 60 < ts) j++;
+                        if (j < nl && lg[j].t_s <= ts + 60) covered = true;
+                        if (covered) continue;
+                        memset(&m[nm], 0, sizeof m[nm]);
+                        m[nm].t_s = ts; m[nm].v_t = bt->v[k]; m[nm].i_t = -bt->i[k];
+                        nm++;
+                    }
+                    int a = 0, b = 0, na = 0;
+                    while (a < nl || b < nm)
+                        all[na++] = (b >= nm || (a < nl && lg[a].t_s <= m[b].t_s)) ? lg[a++] : m[b++];
+                    bsp_display_lock(0);
+                    int k = hist_prepend_points(all, na);
+                    bsp_display_unlock();
+                    ESP_LOGI(TAG, "chart: %d points (%d from the SD log, %d recorder minutes) for test %u",
+                             k, nl, nm, l.test_no);
+                    heap_caps_free(all);
+                }
             }
+            heap_caps_free(lg);
             heap_caps_free(bt);
+            sd_arch_request_sync();            /* copy finished tests to the SD card */
         }
         taskENTER_CRITICAL(&s_live_mux);
         s_live = l;
@@ -504,6 +532,7 @@ static void tick_cb(lv_timer_t *t)
             }
         }
         if (was_running && !running && (o.state == TS_DONE || o.state == TS_IDLE)) {
+            sd_arch_request_sync();
             bms_ble_forget_last();
             resume_tried = false;
         }
@@ -622,6 +651,28 @@ void snap_protocol(bool print, uint16_t cycle)
         doc_print_protocol(&x, false, NULL);
     }
     bsp_display_unlock();
+}
+
+/* the running test, every 10 s, to the SD card (tester + BMS + cells) */
+static void sd_log_task(void *arg)
+{
+    (void)arg;
+    bool synced_once = false;
+    for (;;) {
+        vTaskDelay(pdMS_TO_TICKS(10000));
+        online_sample_t o = {0};
+        fill_sample(&o);
+        if (!synced_once && o.tester_live && sd_store_ready()) {   /* first contact: copy finished tests */
+            synced_once = true;
+            sd_arch_request_sync();
+        }
+        if (!o.tester_live || !(o.state == TS_DISCHARGE || o.state == TS_REST)) continue;
+        uint16_t cycle;
+        taskENTER_CRITICAL(&s_live_mux);
+        cycle = s_live.pr_cycle;
+        taskEXIT_CRITICAL(&s_live_mux);
+        sd_arch_log(&o, cycle);
+    }
 }
 
 /* ----------------------------------------------------------- bring-up -- */
@@ -811,7 +862,8 @@ void app_main(void)
     snap_start();
     blt_usb_start();     /* tester on USB - passive until reads are allowed */
     blt_live_poll_restore();
-    xTaskCreate(blt_poll_task, "blt_poll", 4096, NULL, 4, NULL);
+    xTaskCreate(blt_poll_task, "blt_poll", 6144, NULL, 4, NULL);
+    xTaskCreate(sd_log_task, "sd_log", 6144, NULL, 2, NULL);
 
     /* Wi-Fi via the C6 runs in its own task so the UI stays live if it stalls */
     xTaskCreate(netw_task, "netw", 6144, NULL, 5, NULL);

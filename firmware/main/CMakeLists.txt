@@ -22,6 +22,7 @@ idf_component_register(
         "doc_print.c"
         "test_sum.c"
         "sd_store.c"
+        "sd_arch.c"
         "ui_archive.c"
         "ui_test.c"
     INCLUDE_DIRS "."

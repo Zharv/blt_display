@@ -72,3 +72,19 @@ int hist_prepend_recorder(const uint16_t *t_min, const float *v, const float *i_
     s_n += k;
     return k;
 }
+
+int hist_prepend_points(const hist_pt_t *pts, int n)
+{
+    if (!s_buf || n <= 0) return 0;
+    uint32_t first = s_n ? s_buf[0].t_s : UINT32_MAX;
+    int m = 0;
+    while (m < n && pts[m].t_s < first) m++;
+    int room = HIST_MAX - s_n - 1;
+    if (m == 0 || room <= 0) return 0;
+    int step = (m + room - 1) / room;
+    int k = (m + step - 1) / step;
+    memmove(s_buf + k, s_buf, (size_t)s_n * sizeof(hist_pt_t));
+    for (int j = 0; j < k; j++) s_buf[j] = pts[j * step];
+    s_n += k;
+    return k;
+}

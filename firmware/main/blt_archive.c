@@ -20,22 +20,22 @@ static bool all_ff(const uint8_t *b, int n)
 }
 
 /* live block = the current cycle record */
+static uint8_t s_raw[BLT_REC_LEN];     /* last record read (read_live / read_rec) */
+
 static esp_err_t read_live(blt_rec_t *rec)
 {
-    static uint8_t buf[BLT_REC_LEN];
-    esp_err_t e = blt_usb_read_block(BLT_CMD_RI, 0, buf, BLT_REC_LEN);
-    if (e == ESP_OK) blt_rec_decode(buf, BLT_REC_LEN, rec);
+    esp_err_t e = blt_usb_read_block(BLT_CMD_RI, 0, s_raw, BLT_REC_LEN);
+    if (e == ESP_OK) blt_rec_decode(s_raw, BLT_REC_LEN, rec);
     return e;
 }
 
 /* stored cycle record n; ESP_ERR_NOT_FOUND if the slot holds another one */
 static esp_err_t read_rec(uint16_t n, blt_rec_t *rec)
 {
-    static uint8_t buf[BLT_REC_LEN];
-    esp_err_t e = blt_usb_read_block(BLT_CMD_RD, BLT_REC_ADDR(n), buf, BLT_REC_LEN);
+    esp_err_t e = blt_usb_read_block(BLT_CMD_RD, BLT_REC_ADDR(n), s_raw, BLT_REC_LEN);
     if (e != ESP_OK) return e;
-    if (all_ff(buf, BLT_REC_LEN)) return ESP_ERR_NOT_FOUND;
-    blt_rec_decode(buf, BLT_REC_LEN, rec);
+    if (all_ff(s_raw, BLT_REC_LEN)) return ESP_ERR_NOT_FOUND;
+    blt_rec_decode(s_raw, BLT_REC_LEN, rec);
     return rec->pr_cycle == n ? ESP_OK : ESP_ERR_NOT_FOUND;
 }
 
@@ -54,6 +54,7 @@ esp_err_t blt_archive_fetch(uint16_t want, blt_test_t *t)
         e = read_rec(want, &t->rec);
         if (e != ESP_OK) return e;
     }
+    memcpy(t->raw, s_raw, BLT_REC_LEN);
     if (blt_usb_read_block(BLT_CMD_RD, 0x10, buf, 16) == ESP_OK) {
         int k = 0;
         for (int i = 0; i < 16 && buf[i] >= 0x20 && buf[i] < 0x7F; i++) t->tester_sn[k++] = (char)buf[i];
@@ -118,6 +119,24 @@ esp_err_t blt_archive_fetch(uint16_t want, blt_test_t *t)
     return e;
 }
 
+/* records already seen without a result: a finished record never changes, so
+ * these are not read again (the current one always is) */
+static uint16_t s_empty[150];
+static int s_empty_n;
+
+static bool known_empty(uint16_t n)
+{
+    for (int i = 0; i < s_empty_n; i++) if (s_empty[i] == n) return true;
+    return false;
+}
+
+static void mark_empty(uint16_t n)
+{
+    if (known_empty(n)) return;
+    if (s_empty_n < 150) s_empty[s_empty_n++] = n;
+    else { memmove(s_empty, s_empty + 1, sizeof s_empty - sizeof s_empty[0]); s_empty[149] = n; }
+}
+
 esp_err_t blt_archive_list(blt_arch_entry_t *cache, int *cache_n, int max,
                            void (*progress)(int done, int total))
 {
@@ -133,7 +152,7 @@ esp_err_t blt_archive_list(blt_arch_entry_t *cache, int *cache_n, int max,
     int no = 0, reads = 0;
     for (int k = 0; k < nact && no < max; k++) {
         uint16_t n = (uint16_t)(top - k);
-        blt_arch_entry_t ent = { .n = n, .current = (k == 0) };
+        blt_arch_entry_t ent = { .n = n, .current = (k == 0), .on_tester = true };
         if (k == 0) {
             ent.rec = live;
         } else {
@@ -142,11 +161,15 @@ esp_err_t blt_archive_list(blt_arch_entry_t *cache, int *cache_n, int max,
                 if (cache[c].n == n && !cache[c].current) { hit = c; break; }
             if (hit >= 0) {
                 ent.rec = cache[hit].rec;
+            } else if (known_empty(n)) {
+                if (progress) progress(k + 1, nact);
+                continue;
             } else {
                 e = read_rec(n, &ent.rec);
                 reads++;
-                if (e == ESP_ERR_NOT_FOUND) { e = ESP_OK; if (progress) progress(k + 1, nact); continue; }
+                if (e == ESP_ERR_NOT_FOUND) { e = ESP_OK; mark_empty(n); if (progress) progress(k + 1, nact); continue; }
                 if (e != ESP_OK) break;
+                if (!blt_rec_has_result(&ent.rec)) mark_empty(n);
             }
         }
         if (blt_rec_has_result(&ent.rec)) {

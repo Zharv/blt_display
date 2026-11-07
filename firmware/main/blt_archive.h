@@ -16,6 +16,7 @@ extern "C" {
 #define BLT_ARCH_MAX 5000      /* 250 pages x 20 samples */
 
 typedef struct {
+    uint8_t   raw[BLT_REC_LEN];  /* the cycle record as read */
     blt_rec_t rec;             /* the cycle record */
     bool      current;         /* it is the tester's current cycle */
     char      tester_sn[17];
@@ -31,6 +32,8 @@ typedef struct {
 typedef struct {
     uint16_t  n;               /* absolute record index (= rec.pr_cycle) */
     bool      current;         /* the tester's current cycle (may be running) */
+    bool      on_sd;           /* saved on the SD card */
+    bool      on_tester;       /* still in the tester's record ring */
     blt_rec_t rec;
 } blt_arch_entry_t;
 

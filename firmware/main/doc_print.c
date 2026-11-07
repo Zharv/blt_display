@@ -4,6 +4,7 @@
 #include "rtext.h"
 #include "print_job.h"
 #include "test_sum.h"
+#include "sd_arch.h"
 #include <limits.h>
 
 #include <stdio.h>
@@ -46,14 +47,23 @@ static esp_err_t build_and_print(void)
 {
     blt_test_t *t = heap_caps_calloc(1, sizeof *t, MALLOC_CAP_SPIRAM);
     if (!t) return ESP_ERR_NO_MEM;
-    esp_err_t e = blt_archive_fetch(s_x.cycle, t);
+    esp_err_t e = ESP_FAIL;
+    bool from_sd = false;
+    if (s_x.cycle != BLT_ARCH_CURRENT) from_sd = (e = sd_arch_load(s_x.cycle, t)) == ESP_OK;
+    if (!from_sd) {
+        e = blt_archive_fetch(s_x.cycle, t);
+        /* a finished test read from the tester: keep it on the card */
+        if (e == ESP_OK && !(t->current && t->rec.state >= 1 && t->rec.state <= 4)
+            && !sd_arch_has(t->rec.pr_test, t->rec.pr_cycle))
+            sd_arch_save(t);
+    }
     if (e != ESP_OK) { heap_caps_free(t); return e; }
     const blt_rec_t *rc = &t->rec;
 
     /* what the panel saw of this test (BMS): live values for the current test,
      * the saved summary for an archive one */
     test_sum_t sum;
-    bool have_sum = test_sum_get(rc->pr_test, &sum);
+    bool have_sum = test_sum_get(rc->pr_test, &sum) || sd_arch_get_sum(rc->pr_cycle, &sum);
     bool live_bms = t->current && s_x.bms;
     if (!t->current) { s_x.bms = false; s_x.live_ah = 0; s_x.temp_start = -999; }
     if (have_sum) {

@@ -66,3 +66,24 @@ void sd_store_selftest(void)
     remove(p);
     ESP_LOGI(TAG, "probe write/read/delete: %s", strncmp(line, "blt-display probe", 17) == 0 ? "OK" : "FAILED");
 }
+
+void sd_store_ls(const char *sub)
+{
+    if (!s_ready) return;
+    char p[96];
+    snprintf(p, sizeof p, SD_DIR "%s%.60s", sub && *sub ? "/" : "", sub ? sub : "");
+    DIR *d = opendir(p);
+    if (!d) { ESP_LOGW(TAG, "ls %s: not found", p); return; }
+    struct dirent *de;
+    int n = 0;
+    while ((de = readdir(d))) {
+        char f[200];
+        struct stat st = { 0 };
+        snprintf(f, sizeof f, "%s/%.80s", p, de->d_name);
+        stat(f, &st);
+        if (n < 40) ESP_LOGI(TAG, "  %s%s  %ld", de->d_name, de->d_type == DT_DIR ? "/" : "", (long)st.st_size);
+        n++;
+    }
+    closedir(d);
+    ESP_LOGI(TAG, "%s: %d entries", p, n);
+}
