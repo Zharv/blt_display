@@ -1,4 +1,4 @@
-#include "i18n.h"
+﻿#include "i18n.h"
 
 #include "nvs.h"
 
@@ -20,7 +20,8 @@ static const char *const STR[S__COUNT][2] = {
     [S_TESTER]          = { "Тестер BLT", "BLT tester" },
     [S_SIMULATED]       = { "симуляція", "simulated" },
     [S_LIVE]            = { "наживо", "live" },
-    [S_USB_LINK]        = { "USB підключено · симуляція", "USB linked · simulated" },
+    [S_USB_LINK]        = { "USB · дані не читаються", "USB · not reading" },
+    [S_NO_TESTER]       = { "Немає тестера", "No tester" },
     [S_CAPACITY]        = { "Ємність", "Capacity" },
     [S_ENERGY]          = { "Енергія", "Energy" },
     [S_TIME]            = { "Час", "Time" },

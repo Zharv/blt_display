@@ -732,8 +732,16 @@ void ui_online_update(const online_sample_t *s)
 {
     if (!s) return;
 
-    set_tag(s_t_tag, tr(s->tester_live ? S_LIVE : s->tester_usb ? S_USB_LINK : S_SIMULATED),
-            s->tester_live ? C_GREEN : s->tester_usb ? C_BLUE : C_AMBER);
+    set_tag(s_t_tag, tr(s->tester_live ? S_LIVE : s->tester_usb ? S_USB_LINK : S_BMS_NO_LINK),
+            s->tester_live ? C_GREEN : s->tester_usb ? C_BLUE : C_SUB);
+    if (!s->tester_live) {
+        set_txt(s_t_v, "--");
+        set_txt(s_t_a, "--");
+        set_txt(s_t_ah, "-- %s", tr(S_U_AH));
+        set_txt(s_t_wh, "-- %s", tr(S_U_WH));
+        set_txt(s_t_time, "--:--:--");
+        set_txt(s_t_temp, "-- °C");
+    } else {
     set_txt(s_t_v, "%.2f", s->voltage_v);
     set_txt(s_t_a, "%s%.1f", s->current_a < 0 ? "−" : "", fabsf(s->current_a));
     set_txt(s_t_ah, "%.2f %s", s->capacity_ah, tr(S_U_AH));
@@ -741,6 +749,7 @@ void ui_online_update(const online_sample_t *s)
     set_txt(s_t_time, "%02u:%02u:%02u", (unsigned)(s->elapsed_s / 3600),
                           (unsigned)(s->elapsed_s / 60 % 60), (unsigned)(s->elapsed_s % 60));
     set_txt(s_t_temp, "%.1f °C", s->temp_c);
+    }
 
     if (s->bms_present) {
         set_txt(s_b_title, "BMS  ·  %s", s->bms_name[0] ? s->bms_name : "—");

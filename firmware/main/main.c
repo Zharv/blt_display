@@ -41,18 +41,7 @@
 
 static const char *TAG = "blt";
 
-#define SIM_CELLS       16
-#define SIM_NOMINAL_AH  50.0f
-#define SIM_DT_S        60.0f
 #define TICK_MS         500
-
-typedef struct {
-    float v, i, ah, wh, temp;
-    uint32_t t;
-    bool done;
-} sim_state_t;
-
-static sim_state_t s_sim;
 
 /* print snapshot (kept alive for the print task) */
 static volatile bool s_printing;
@@ -60,66 +49,6 @@ static report_data_t s_rep;
 static uint16_t      s_rep_cells[UI_MAX_CELLS];
 static float         s_rep_v[HIST_MAX], s_rep_i[HIST_MAX], s_rep_d[HIST_MAX];
 static char          s_rep_date[32], s_rep_batt[40];
-
-/* ------------------------------------------------------------------ sim -- */
-
-static void sim_reset(sim_state_t *s)
-{
-    *s = (sim_state_t){ .v = 53.3f, .i = -12.0f, .temp = 26.5f };
-}
-
-static void sim_step(sim_state_t *s, float dt_s)
-{
-    if (s->done) return;
-    float ia = fabsf(s->i);
-    s->ah += ia * dt_s / 3600.0f;
-    s->wh += s->v * ia * dt_s / 3600.0f;
-    s->t += (uint32_t)dt_s;
-    s->temp = 26.5f + s->ah * 0.25f;
-    s->v = 53.3f - s->ah * 0.22f;
-    if (s->v < 44.0f) s->v = 44.0f - (s->ah - (53.3f - 44.0f) / 0.22f) * 0.15f;
-    if (s->v <= 42.0f) { s->v = 42.0f; s->i = 0.0f; s->done = true; }
-}
-
-static void sim_fill_sample(const sim_state_t *s, online_sample_t *o)
-{
-    o->tester_live = false;
-    o->tester_usb = blt_usb_state(NULL, NULL) == BLT_USB_CONNECTED;
-    o->state = s->done ? TS_DONE : TS_DISCHARGE;
-    o->voltage_v = s->v;
-    o->current_a = s->i;
-    o->capacity_ah = s->ah;
-    o->energy_wh = s->wh;
-    o->elapsed_s = s->t;
-    o->temp_c = s->temp;
-
-    o->bms_present = true;
-    o->bms_live = false;
-    strlcpy(o->bms_name, "SIM", sizeof o->bms_name);
-    float soc = 100.0f - (s->ah / SIM_NOMINAL_AH) * 100.0f;
-    if (soc < 0) soc = 0;
-    o->soc_pct = (uint8_t)(soc + 0.5f);
-    o->bms_pack_v = s->v - 0.05f;
-    o->bms_current_a = s->i;
-    o->cell_count = SIM_CELLS;
-    o->temp_count = 3;
-    o->temp_dc[0] = (int16_t)((s->temp + 0.8f) * 10);
-    o->temp_dc[1] = (int16_t)((s->temp + 0.3f) * 10);
-    o->temp_dc[2] = (int16_t)((s->temp + 4.0f) * 10);
-
-    /* cells drift apart towards the end of the discharge; #7 is the weak one */
-    float base_mv = (s->v * 1000.0f) / SIM_CELLS;
-    float k = (100.0f - soc) / 100.0f;
-    float spread = 3.0f + k * k * 60.0f;
-    for (int c = 0; c < SIM_CELLS; c++) {
-        float off = ((c * 7) % 5 - 2) * spread * 0.25f;
-        if (c == 6) off -= spread;
-        if (c == 11) off += spread * 0.5f;
-        o->cell_mv[c] = (uint16_t)(base_mv + off);
-    }
-    o->balance_bits = k > 0.3f ? (1u << 11) : 0;
-    ui_sample_finish_cells(o);
-}
 
 static float s_live_wh;              /* energy of the running test, integrated in tick_cb */
 
@@ -185,11 +114,12 @@ static void blt_poll_task(void *arg)
     }
 }
 
-/* Tester side is still simulated; the BMS side uses the real BLE BMS when it
- * has delivered a frame in the last 5 s. */
+/* Real data only: the tester from the USB live block, the BMS from BLE, each
+ * when it delivered data in the last 5 s; otherwise the field stays "no data". */
 static void fill_sample(online_sample_t *o)
 {
-    sim_fill_sample(&s_sim, o);
+    o->tester_usb = blt_usb_state(NULL, NULL) == BLT_USB_CONNECTED;
+    o->state = TS_IDLE;
     if (s_live_us && esp_timer_get_time() - s_live_us < 5000000) {
         blt_live_t l;
         taskENTER_CRITICAL(&s_live_mux);
@@ -206,12 +136,6 @@ static void fill_sample(online_sample_t *o)
         o->state = l.state == BLT_ST_DISCHARGE || l.state == BLT_ST_CHARGE ? TS_DISCHARGE :
                    l.state == BLT_ST_DISCHARGE_PAUSE || l.state == BLT_ST_CHARGE_PAUSE ? TS_REST :
                    l.state == BLT_ST_END ? TS_DONE : TS_IDLE;
-        /* real tester: never show the simulated BMS next to it */
-        o->bms_present = false;
-        o->bms_live = false;
-        o->cell_count = 0;
-        o->temp_count = 0;
-        o->bms_name[0] = '\0';
     }
     bms_data_t b;
     uint32_t age = 0;
@@ -255,11 +179,13 @@ static void frame_refresh(const online_sample_t *o)
     char hms[16];
     fmt_hms(hms, sizeof hms, o->elapsed_s);
     static const str_id_t ST[] = { S_ST_IDLE, S_ST_DISCHARGE, S_ST_REST, S_ST_DONE };
-    snprintf(state, sizeof state, "%s  ·  %s", tr(ST[o->state & 3]), hms);
+    if (o->tester_live) snprintf(state, sizeof state, "%s  ·  %s", tr(ST[o->state & 3]), hms);
+    else snprintf(state, sizeof state, "%s", tr(S_NO_TESTER));
 
     frame_status_t st = {
         .state_text = state,
-        .state_ind = o->state == TS_DISCHARGE ? IND_OK : o->state == TS_IDLE ? IND_OFF : IND_BUSY,
+        .state_ind = !o->tester_live ? IND_OFF :
+                     o->state == TS_DISCHARGE ? IND_OK : o->state == TS_IDLE ? IND_OFF : IND_BUSY,
     };
 
     char ssid[33];
@@ -298,19 +224,14 @@ static void tick_cb(lv_timer_t *t)
 {
     (void)t;
     int64_t t0 = esp_timer_get_time();
-    static int done_hold, chart_div, last_live = -1, last_tlive = -1, last_tstate = -1;
-    if (s_sim.done) {
-        if (++done_hold > 20) { done_hold = 0; sim_reset(&s_sim); hist_reset(); }
-    } else {
-        sim_step(&s_sim, SIM_DT_S);
-    }
+    static int chart_div, last_live = -1, last_tlive = -1, last_tstate = -1;
     online_sample_t o = {0};
     fill_sample(&o);
-    if (o.bms_live != last_live) {   /* don't mix simulated and real BMS data in one curve */
+    if (o.bms_live != last_live) {   /* BMS appeared/vanished: start a fresh curve */
         if (last_live >= 0) hist_reset();
         last_live = o.bms_live;
     }
-    if (o.tester_live != last_tlive) {   /* simulated <-> real tester: start a fresh curve */
+    if (o.tester_live != last_tlive) {   /* tester data appeared/vanished: start a fresh curve */
         if (last_tlive >= 0) hist_reset();
         last_tlive = o.tester_live;
         s_live_wh = 0;
@@ -326,8 +247,6 @@ static void tick_cb(lv_timer_t *t)
             s_live_wh += o.voltage_v * -o.current_a * (TICK_MS / 1000.0f) / 3600.0f;
         if (running) hist_add(&o);
         last_tstate = o.state;
-    } else if (!s_sim.done) {
-        hist_add(&o);
     }
     if (lv_screen_active() == s_scr[TAB_ONLINE]) ui_online_update(&o);
     if (++chart_div >= 4) { chart_div = 0; ui_online_chart_refresh(); }   /* ~2 s */
@@ -405,16 +324,17 @@ static void on_print(void)
     struct tm tm;
     if (clock_valid(&tm)) strftime(s_rep_date, sizeof s_rep_date, "%Y-%m-%d %H:%M", &tm);
     else strlcpy(s_rep_date, "n/a", sizeof s_rep_date);
-    snprintf(s_rep_batt, sizeof s_rep_batt, "%uS  %.20s", o.cell_count, o.bms_live ? o.bms_name : "SIM");
+    if (o.bms_live) snprintf(s_rep_batt, sizeof s_rep_batt, "%uS  %.20s", o.cell_count, o.bms_name);
+    else strlcpy(s_rep_batt, "-", sizeof s_rep_batt);
 
     s_rep = (report_data_t){
         .title = "BATTERY TEST REPORT",
         .date = s_rep_date,
         .operator_name = "-",
         .battery_id = s_rep_batt,
-        .nominal_v = 51.2f, .nominal_ah = SIM_NOMINAL_AH, .discharge_a = 12.0f,
+        .nominal_v = 0, .nominal_ah = 0, .discharge_a = o.current_a < 0 ? -o.current_a : 0,   /* settings block not read yet */
         .discharged_ah = o.capacity_ah, .duration_s = o.elapsed_s,
-        .min_voltage_v = min_v, .max_temp_c = max_t, .cutoff_v = 42.0f,
+        .min_voltage_v = min_v, .max_temp_c = max_t, .cutoff_v = 0, /* settings block not read yet */
         .curve_v = s_rep_v, .curve_i = s_rep_i, .curve_n = n,
         .curve_vmin = vmin, .curve_vmax = vmax, .curve_imax = ceilf(imax * 1.2f),
         .curve_delta_mv = s_rep_d,
@@ -579,7 +499,6 @@ void app_main(void)
     }
     bsp_display_backlight_on();
 
-    sim_reset(&s_sim);
     hist_init();
 
     bsp_display_lock(0);
@@ -594,7 +513,7 @@ void app_main(void)
     ui_frame_set_print_cb(on_print);
     lv_screen_load(s_scr[TAB_ONLINE]);
     online_sample_t o = {0};
-    sim_fill_sample(&s_sim, &o);
+    fill_sample(&o);
     ui_online_update(&o);
     frame_refresh(&o);
     lv_timer_create(tick_cb, TICK_MS, NULL);
