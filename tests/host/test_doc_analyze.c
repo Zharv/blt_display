@@ -51,7 +51,23 @@ int main(void)
     /* 96 %: cold */
     f = good(); f.ah = 288; f.temp_start = 6;
     n = doc_analyze(&f, v, sizeof v, o, DOC_FINDINGS_MAX);
-    CHECK(has(o, n, "низька") && count(o, n, DOC_F_CAUSE) == 1, "cold is the cause");
+    CHECK(has(o, n, "приблизно на 8 %") && count(o, n, DOC_F_CAUSE) == 1, "cold is the cause");
+
+    /* 96 % in a cool workshop (12 C): ~5 % from the cold, ~304 Ah at 25 C */
+    f = good(); f.ah = 288; f.temp_start = 12;
+    n = doc_analyze(&f, v, sizeof v, o, DOC_FINDINGS_MAX);
+    CHECK(has(o, n, "на 5 %") && has(o, n, "близько 304 А·год"), "cool workshop estimate");
+    CHECK(count(o, n, DOC_F_CAUSE) == 1, "temperature counted as a cause");
+
+    /* same at full capacity: only a note */
+    f = good(); f.temp_start = 12;
+    n = doc_analyze(&f, v, sizeof v, o, DOC_FINDINGS_MAX);
+    CHECK(count(o, n, DOC_F_CAUSE) == 0 && has(o, n, "знижена"), "cold note at full capacity");
+
+    /* 96 % without a temperature: says so */
+    f = good(); f.ah = 288; f.temp_known = false; f.temp_max_known = false;
+    n = doc_analyze(&f, v, sizeof v, o, DOC_FINDINGS_MAX);
+    CHECK(has(o, n, "не вимірювали"), "unknown temperature mentioned");
 
     /* 96 %: BMS stopped at 59 V, tester threshold 54 V, big end imbalance */
     f = good(); f.ah = 288; f.stop = DOC_STOP_BMS; f.v_end = 59.0f; f.d_end = 140; f.low_cell = 12;
