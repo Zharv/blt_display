@@ -52,6 +52,8 @@ foreach ($c in Get-ChildItem "$here\host" -Filter "test_*.c" | Sort-Object Name)
         $tests += @{ name = $name; inc = $inc_bms; src = $src_bms; args = "" }
     } elseif ($name -eq "test_report") {
         $tests += @{ name = $name; inc = $inc_report; src = $src_report; args = "`"$out\report.pgm`"" }
+    } elseif ($name -eq "test_doc_analyze") {
+        $tests += @{ name = $name; inc = $inc_report; src = $src_report; args = "" }
     } elseif ($name -eq "test_urf") {
         $tests += @{ name = $name; inc = $inc_report; src = $src_report; args = "" }
     } elseif ($name -eq "test_health") {

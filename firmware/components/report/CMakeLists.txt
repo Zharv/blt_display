@@ -5,5 +5,6 @@ idf_component_register(
         "urf.c"
         "rtext.c"
         "doc_protocol.c"
+        "doc_analyze.c"
     INCLUDE_DIRS "include"
 )

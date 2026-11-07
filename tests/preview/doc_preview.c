@@ -55,6 +55,8 @@ int main(int argc, char **argv)
     /* argv[3]: a PROTO dump from the device (DOCK/DOCI/DOCS log lines) */
     static doc_kv_t dinfo[16];
     static uint16_t dt[5000]; static float dv[5000], di[5000];
+    static float ddt[5000], ddm[5000]; int nd = 0;
+    static doc_finding_t finds[DOC_FINDINGS_MAX]; int nf = 0;
     static char line[512];
     if (argc > 3 && (f = fopen(argv[3], "rb")) != NULL) {
         int ni = 0, ns = 0;
@@ -62,7 +64,12 @@ int main(int argc, char **argv)
         while (fgets(line, sizeof line, f)) {
             line[strcspn(line, "\r\n")] = 0;
             char *p;
-            if ((p = strstr(line, "DOCS ")) != NULL && ns < 5000) {
+            if ((p = strstr(line, "DOCF ")) != NULL && nf < DOC_FINDINGS_MAX) {
+                char *bar = strchr(p + 5, '|');
+                if (bar) { finds[nf].level = (doc_flevel_t)atoi(p + 5); snprintf(finds[nf].text, sizeof finds[nf].text, "%s", bar + 1); nf++; }
+            } else if ((p = strstr(line, "DOCD ")) != NULL && nd < 5000) {
+                if (sscanf(p + 5, "%f %f", &ddt[nd], &ddm[nd]) == 2) nd++;
+            } else if ((p = strstr(line, "DOCS ")) != NULL && ns < 5000) {
                 unsigned tt; float vv, ii;
                 if (sscanf(p + 5, "%u %f %f", &tt, &vv, &ii) == 3) { dt[ns] = (uint16_t)tt; dv[ns] = vv; di[ns] = ii; ns++; }
             } else if ((p = strstr(line, "DOCI ")) != NULL && ni < 16) {
@@ -88,11 +95,17 @@ int main(int argc, char **argv)
                 else if (!strcmp(k, "in_progress")) d.in_progress = atoi(v) != 0;
                 else if (!strcmp(k, "start")) sscanf(v, "%d:%d", &d.start_h, &d.start_m);
                 else if (!strcmp(k, "v_stop")) d.v_stop = (float)atof(v);
+                else if (!strcmp(k, "stop_reason")) d.stop_reason = strdup(v);
+                else if (!strcmp(k, "battery_desc")) d.battery_desc = strdup(v);
+                else if (!strcmp(k, "start_str")) snprintf(d.start_str, sizeof d.start_str, "%s", v);
+                else if (!strcmp(k, "verdict")) d.verdict = strdup(v);
             }
         }
         fclose(f);
         d.info = dinfo; d.info_n = ni;
         d.t_min = dt; d.v = dv; d.i = di; d.n = ns;
+        d.dt_min = ddt; d.dmv = ddm; d.dn = nd;
+        d.findings = finds; d.findings_n = nf;
     }
     static uint8_t px[DOC_A4_W * DOC_A4_H];
     raster_t r;

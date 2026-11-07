@@ -6,6 +6,7 @@
 #pragma once
 
 #include "raster.h"
+#include "doc_analyze.h"
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -18,7 +19,7 @@ extern "C" {
 
 typedef struct {
     const char *label;
-    char value[48];
+    char value[72];
 } doc_kv_t;
 
 /* "ПРОТОКОЛ ВИПРОБУВАНЬ" */
@@ -35,11 +36,18 @@ typedef struct {
     char     date[16];            /* 18.09.2026 (signature date) */
     char     serial[24];
     float    v_before;            /* <= 0: not known (left blank) */
-    float    temp_start;          /* < -100: not known */
+    float    temp_start;          /* < -100: not known (printed as 20) */
     int      discharge_a;
     float    capacity_ah;
     uint32_t discharge_min;
     bool     in_progress;         /* test still running: marked as an interim protocol */
+    const char *stop_reason;      /* unused (kept for the host preview) */
+    const char *battery_desc;     /* "Li-NMC, 20S, номінальна напруга 74 В, номінальна ємність 300 А·год" */
+    char        start_str[24];    /* "06.11.2026 12:53" */
+    /* conclusion: verdict + what influenced the result (doc_analyze) */
+    const char          *verdict;
+    const doc_finding_t *findings;
+    int                  findings_n;
 
     /* Малюнок №1: test results table */
     const doc_kv_t *info;
@@ -52,6 +60,12 @@ typedef struct {
     int             n;
     int             start_h, start_m;   /* clock at t = 0 (axis labels) */
     float           v_stop;       /* discharge stop voltage line, <= 0: none */
+
+    /* cell imbalance during the test (max - min cell, from the panel's BMS log),
+     * drawn under the discharge diagram on the same time axis; dn < 2 = none */
+    const float    *dt_min;       /* minutes since discharge start */
+    const float    *dmv;          /* mV */
+    int             dn;
 } doc_protocol_t;
 
 void doc_protocol_render(const doc_protocol_t *d, raster_t *r);

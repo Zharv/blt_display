@@ -612,6 +612,7 @@ static void doc_extra_fill(doc_extra_t *x)
     fill_sample(&o);
     memset(x, 0, sizeof *x);
     x->cycle = BLT_ARCH_CURRENT;
+    x->chem = health_chem_get();
     x->temp_start = s_temp_start;
     x->live_ah = o.tester_live ? o.capacity_ah : 0;
     if (o.bms_live && o.cell_count) {

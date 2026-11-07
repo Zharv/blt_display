@@ -5,9 +5,12 @@
 #include "print_job.h"
 #include "bms_ble.h"
 #include "test_sum.h"
+#include "health.h"
 #include "sd_arch.h"
+#include "hist.h"
 #include <limits.h>
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -38,7 +41,11 @@ static bool s_print;
 static void (*s_done)(esp_err_t);
 
 /* "83.8" -> "83,8" */
-static void comma(char *s) { for (; *s; s++) if (*s == '.') *s = ','; }
+static void comma(char *s)
+{
+    for (char *c = s; *c; c++)
+        if (*c == '.' && c > s && c[-1] >= '0' && c[-1] <= '9' && c[1] >= '0' && c[1] <= '9') *c = ',';
+}
 
 #define KV(lbl, ...) do { if (ni < (int)(sizeof info / sizeof info[0])) { \
     info[ni].label = (lbl); snprintf(info[ni].value, sizeof info[ni].value, __VA_ARGS__); \
@@ -90,8 +97,34 @@ static esp_err_t build_and_print(void)
         if (sum.delta_max_mv > s_x.imbalance_max_mv) s_x.imbalance_max_mv = sum.delta_max_mv;
     }
 
-    static doc_kv_t info[16];
-    int ni = 0;
+    /* the panel's BMS log of this test (SD card): imbalance curve, lowest cell */
+    static float *d_t, *d_mv;
+    int dn = 0, low_cell = 0, log_d_end = -1;
+    {
+        const int MAXR = 4000;
+        hist_pt_t *lg = heap_caps_malloc(MAXR * sizeof(hist_pt_t), MALLOC_CAP_SPIRAM);
+        if (!d_t) d_t = heap_caps_malloc(MAXR * sizeof(float), MALLOC_CAP_SPIRAM);
+        if (!d_mv) d_mv = heap_caps_malloc(MAXR * sizeof(float), MALLOC_CAP_SPIRAM);
+        if (lg && d_t && d_mv) {
+            int nl = sd_arch_read_log(rc->pr_test, rc->pr_cycle, lg, MAXR);
+            for (int k = 0; k < nl; k++) {
+                if (lg[k].n < 2) continue;
+                uint16_t lo = 0xFFFF, hi = 0;
+                int lo_i = 0;
+                for (int c = 0; c < lg[k].n; c++) {
+                    if (lg[k].cell[c] < lo) { lo = lg[k].cell[c]; lo_i = c; }
+                    if (lg[k].cell[c] > hi) hi = lg[k].cell[c];
+                }
+                d_t[dn] = lg[k].t_s / 60.0f;
+                d_mv[dn] = (float)(hi - lo);
+                dn++;
+                low_cell = lo_i + 1;
+                log_d_end = hi - lo;
+            }
+        }
+        heap_caps_free(lg);
+    }
+
     float vmin = 1e9f, wh = 0;
     for (int k = 0; k < t->n; k++) {
         if (t->v[k] < vmin) vmin = t->v[k];
@@ -102,40 +135,85 @@ static esp_err_t build_and_print(void)
     if (s_x.live_ah > ah && s_x.live_ah < ah + 1.5f) ah = s_x.live_ah;
     bool running = t->current && rc->state == 1;      /* still discharging */
 
-    KVR("Тестер", "BLT160 · тест %u", rc->pr_test);
-    KVR("Серійний № батареї", "%s", rc->battery_id[0] ? rc->battery_id : "—");
-    KV("Номінальна напруга", "%u В", rc->rated_v);
-    KV("Номінальна ємність", "%u А·год", rc->rated_ah);
-    KV("Струм розряду", "%u А", rc->discharge_a);
-    KV("Напруга кінця розряду", "%.1f В", blt_rec_stop_v(rc));
-    if (rc->dis_d)
-        KVR("Початок розряду", "%02u.%02u.20%02u %02u:%02u", rc->dis_d, rc->dis_mo, rc->dis_y, rc->dis_h, rc->dis_mi);
+    int cells = live_bms ? s_x.cells : (have_sum ? sum.cells : 0);
+    bool sum_ok = have_sum && sum.cells;
+    int d_start = sum_ok ? sum.delta0_mv : -1;
+    int d_end = live_bms ? s_x.imbalance_mv
+              : log_d_end >= 0 ? log_d_end
+              : sum_ok ? (int)sum.cell_max_mv - (int)sum.cell_min_mv : -1;
+    bool t_known = s_x.temp_start > -100;
+    float t_start = t_known ? s_x.temp_start : 20.0f;   /* not measured: 20 C */
+    bool tmax_known = sum_ok && sum.temp_max_dc != INT16_MIN;
+    float t_max = tmax_known ? sum.temp_max_dc / 10.0f : 0;
+
+    chem_t ch = s_x.chem == CHEM_NMC || s_x.chem == CHEM_LFP ? (chem_t)s_x.chem
+              : health_guess_chem(rc->rated_v, cells, sum_ok ? sum.cell_max_mv : 0);
+    float v_cell = ch == CHEM_LFP ? 3.2f : 3.7f;
+    /* no BMS data (older tests): the cell count from the tester's rated
+     * voltage (programmed as 3.6 V/cell NMC, 3.2 V/cell LFP) */
+    if (!cells && rc->rated_v)
+        cells = (int)lroundf(rc->rated_v / (ch == CHEM_LFP ? 3.2f : 3.6f));
+
+    /* the object: chemistry, cells, nominal values */
+    static char bdesc[160];
+    if (cells)
+        snprintf(bdesc, sizeof bdesc, "%s, %dS, номінальна напруга %.0f В, номінальна ємність %u А·год",
+                 ch == CHEM_LFP ? "Li-FePO4" : "Li-NMC", cells, cells * v_cell, rc->rated_ah);
     else
-        KV("Початок розряду", "—");
-    KV("Час розряду", "%u:%02u", rc->t_dis_min / 60, rc->t_dis_min % 60);
-    if (rc->rated_ah) KV("Знята ємність", "%.0f А·год (%.1f %%)", ah, ah * 100.0f / rc->rated_ah);
-    else KV("Знята ємність", "%.0f А·год", ah);
-    KV("Енергія", "%.0f Вт·год", wh);
-    if (t->n) KV("Мін. напруга", "%.1f В", vmin); else KV("Мін. напруга", "—");
-    KV("Макс. темп. тестера", "%d °C", rc->t_card_max);
-    /* id 28 "VSTOP IN SCARICA" is the normal end of a discharge, not a fault */
-    blt_rec_t ra = *rc;
-    ra.mem_alarms[3] &= (uint8_t)~(1u << 3);
-    int na = blt_rec_alarm_count(&ra);
-    int a1 = blt_rec_alarm_first(&ra);
-    if (na == 1) KVR("Аварії тестера", "%s", blt_alarm_name_ua(a1)[0] ? blt_alarm_name_ua(a1) : "1");
-    else if (na) KVR("Аварії тестера", "%d (%s, …)", na, blt_alarm_name_ua(a1));
-    else KVR("Аварії тестера", "немає");
-    if (live_bms) {
-        KVR("BMS", "%.20s · %uS", s_x.bms_name, s_x.cells);
-        KV("Комірки (зараз)", "%.3f…%.3f В", s_x.cell_min_mv / 1000.0f, s_x.cell_max_mv / 1000.0f);
-        if (s_x.imbalance_max_mv) KVR("Розбаланс", "%u мВ (макс. %u)", s_x.imbalance_mv, s_x.imbalance_max_mv);
-        else KV("Розбаланс", "%u мВ", s_x.imbalance_mv);
-    } else if (have_sum && sum.cells) {
-        KVR("BMS", "%.19s · %uS", sum.bms, sum.cells);
-        KV("Комірки (кінець)", "%.3f…%.3f В", sum.cell_min_mv / 1000.0f, sum.cell_max_mv / 1000.0f);
-        KVR("Розбаланс", "старт %u, макс. %u мВ", sum.delta0_mv, sum.delta_max_mv);
+        snprintf(bdesc, sizeof bdesc, "номінальна напруга %u В, номінальна ємність %u А·год", rc->rated_v, rc->rated_ah);
+
+    /* results table: only what matters to the customer */
+    static doc_kv_t info[16];
+    int ni = 0;
+    char dur[64];
+    doc_duration_ua(rc->t_dis_min, dur, sizeof dur);
+    if (rc->rated_ah) KV(running ? "Знято на момент друку" : "Встановлена ємність", "%.0f А·год (%.1f %%)", ah, ah * 100.0f / rc->rated_ah);
+    else KV("Встановлена ємність", "%.0f А·год", ah);
+    KV("Енергія", "%.1f кВт·год", wh / 1000.0f);
+    KVR("Тривалість розряду", "%s", dur);
+    if (ah > 0 && wh > 0) KV("Середня напруга розряду", "%.1f В", wh / ah); else KVR("Середня напруга розряду", "—");
+    if (t->n && t->v[0] > 0) {
+        if (cells) KV("Напруга до тестування", "%.1f В (%.2f В/ком.)", t->v[0], t->v[0] / cells);
+        else KV("Напруга до тестування", "%.1f В", t->v[0]);
+    } else KVR("Напруга до тестування", "—");
+    if (t->n) KV(running ? "Напруга зараз" : "Напруга в кінці", "%.1f В", t->v[t->n - 1]); else KVR("Напруга в кінці", "—");
+    if (d_start >= 0 || d_end >= 0) {
+        char a1[12] = "—", a2[12] = "—";
+        if (d_start >= 0) snprintf(a1, sizeof a1, "%d", d_start);
+        if (d_end >= 0) snprintf(a2, sizeof a2, "%d", d_end);
+        KVR("Розбаланс: початок / кінець", "%s / %s мВ", a1, a2);
+    } else KVR("Розбаланс: початок / кінець", "немає даних BMS");
+    if (tmax_known) KV("Температура батареї", "%.0f → %.0f °C", t_start, t_max);
+    else KV("Температура батареї", "%.0f °C", t_start);
+
+    /* conclusion */
+    doc_stop_t stop;
+    static char alarm_nm[48];
+    {
+        const uint8_t *m = rc->mem_alarms;
+        blt_rec_t ra = *rc;
+        ra.mem_alarms[3] &= (uint8_t)~0x08;          /* 28 VSTOP IN SCARICA */
+        ra.mem_alarms[5] &= (uint8_t)~0x01;          /* 41 STOP TEST DA BATT */
+        int other = blt_rec_alarm_first(&ra);
+        if (running) stop = DOC_STOP_RUNNING;
+        else if (m[5] & 0x01) stop = DOC_STOP_BMS;
+        else if (other) { stop = DOC_STOP_ALARM; strlcpy(alarm_nm, blt_alarm_name_ua(other), sizeof alarm_nm); }
+        else if (m[3] & 0x08) stop = DOC_STOP_VSTOP;
+        else if (rc->t_limit_min && rc->t_limit_min != 6000 && rc->t_dis_min >= rc->t_limit_min) stop = DOC_STOP_TIME;
+        else if (t->n && t->v[t->n - 1] <= blt_rec_stop_v(rc) + 0.5f) stop = DOC_STOP_VSTOP;
+        else stop = DOC_STOP_MANUAL;
     }
+    doc_facts_t facts = {
+        .ah = ah, .rated_ah = rc->rated_ah, .cells = cells, .lfp = ch == CHEM_LFP,
+        .v_before = t->n ? t->v[0] : 0, .v_before_loaded = t->n && t->i[0] > 2.0f,
+        .temp_known = t_known, .temp_start = t_start, .temp_max_known = tmax_known, .temp_max = t_max,
+        .d_start = d_start, .d_end = d_end, .low_cell = low_cell,
+        .stop = stop, .v_end = t->n ? t->v[t->n - 1] : 0, .v_stop = blt_rec_stop_v(rc),
+        .alarm_name = alarm_nm,
+    };
+    static char verdict[320];
+    static doc_finding_t finds[DOC_FINDINGS_MAX];
+    int nf = doc_analyze(&facts, verdict, sizeof verdict, finds, DOC_FINDINGS_MAX);
 
     static doc_protocol_t d;
     d = (doc_protocol_t){
@@ -145,9 +223,12 @@ static esp_err_t build_and_print(void)
         .v_before = t->n ? t->v[0] : 0, .temp_start = s_x.temp_start,
         .discharge_a = rc->discharge_a, .capacity_ah = ah, .discharge_min = rc->t_dis_min,
         .in_progress = running,
+        .battery_desc = bdesc,
+        .verdict = verdict, .findings = finds, .findings_n = nf,
         .info = info, .info_n = ni,
         .t_min = t->t_min, .v = t->v, .i = t->i, .n = t->n,
-        .start_h = t->t0_h, .start_m = t->t0_mi, .v_stop = blt_rec_stop_v(rc),
+        .start_h = t->t0_h, .start_m = t->t0_mi, .v_stop = 0,   /* no stop-voltage line */
+        .dt_min = d_t, .dmv = d_mv, .dn = dn,
     };
     /* protocol number: from a serial YYYYMMDDNNNN -> DDMMYYYY-N, else the test date */
     const char *sn = rc->battery_id;
@@ -157,6 +238,8 @@ static esp_err_t build_and_print(void)
     else snprintf(d.number, sizeof d.number, "%02u%02u20%02u-%u", rc->dis_d, rc->dis_mo, rc->dis_y, rc->pr_test);
     snprintf(d.date, sizeof d.date, "%02u.%02u.20%02u", rc->snap_d, rc->snap_mo, rc->snap_y);
     strlcpy(d.serial, sn[0] ? sn : "—", sizeof d.serial);
+    if (rc->dis_d)
+        snprintf(d.start_str, sizeof d.start_str, "%02u.%02u.20%02u %02u:%02u", rc->dis_d, rc->dis_mo, rc->dis_y, rc->dis_h, rc->dis_mi);
 
     /* page data for the host preview (tests/preview) */
     ESP_LOGI(TAG, "DOCK number|%s", d.number);
@@ -170,9 +253,17 @@ static esp_err_t build_and_print(void)
     ESP_LOGI(TAG, "DOCK in_progress|%d", d.in_progress);
     ESP_LOGI(TAG, "DOCK start|%u:%u", d.start_h, d.start_m);
     ESP_LOGI(TAG, "DOCK v_stop|%.2f", d.v_stop);
+    ESP_LOGI(TAG, "DOCK battery_desc|%s", bdesc);
+    ESP_LOGI(TAG, "DOCK start_str|%s", d.start_str);
+    ESP_LOGI(TAG, "DOCK verdict|%s", verdict);
+    for (int k = 0; k < nf; k++) ESP_LOGI(TAG, "DOCF %d|%s", finds[k].level, finds[k].text);
     for (int k = 0; k < ni; k++) ESP_LOGI(TAG, "DOCI %s|%s", info[k].label, info[k].value);
     for (int k = 0; !s_print && k < t->n; k++) {
         ESP_LOGI(TAG, "DOCS %u %.1f %.1f", t->t_min[k], t->v[k], t->i[k]);
+        if (k % 40 == 39) vTaskDelay(1);
+    }
+    for (int k = 0; !s_print && k < dn; k++) {
+        ESP_LOGI(TAG, "DOCD %.2f %.0f", d_t[k], d_mv[k]);
         if (k % 40 == 39) vTaskDelay(1);
     }
     ESP_LOGI(TAG, "DOCEND");

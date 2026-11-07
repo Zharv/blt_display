@@ -85,6 +85,15 @@ static int info_table(raster_t *r, int x, int y, int w, const doc_kv_t *kv, int 
 
 /* ------------------------------------------------------------ figure 2 */
 
+/* both diagrams share the time axis: 0 .. the last sample of either */
+static int axis_tmax(const doc_protocol_t *d)
+{
+    int tmax = 1;
+    for (int k = 0; k < d->n; k++) if (d->t_min[k] > tmax) tmax = d->t_min[k];
+    if (d->dn > 0 && d->dt_min[d->dn - 1] > tmax) tmax = (int)ceilf(d->dt_min[d->dn - 1]);
+    return tmax;
+}
+
 static void diagram(raster_t *r, int x, int y, int w, int h, const doc_protocol_t *d)
 {
     const int px = U(34);
@@ -98,8 +107,8 @@ static void diagram(raster_t *r, int x, int y, int w, int h, const doc_protocol_
         if (d->v[k] < vmin) vmin = d->v[k];
         if (d->v[k] > vmax) vmax = d->v[k];
         if (d->i && d->i[k] > imax) imax = d->i[k];
-        if (d->t_min[k] > tmax) tmax = d->t_min[k];
     }
+    tmax = axis_tmax(d);
     if (d->v_stop > 0) { vmin = fminf(vmin, d->v_stop); vmax = fmaxf(vmax, d->v_stop); }
     if (vmax < vmin) { vmin = 0; vmax = 100; }
     float vs = nice_step(vmax - vmin + 1, 8);
@@ -169,6 +178,47 @@ static void diagram(raster_t *r, int x, int y, int w, int h, const doc_protocol_
 #undef YI
 }
 
+/* imbalance (max - min cell) over the test, aligned with diagram() */
+static void delta_diagram(raster_t *r, int x, int y, int w, int h, const doc_protocol_t *d)
+{
+    const int px = U(34);
+    const int ax = x + U(120), ay = y + U(70);
+    const int aw = w - U(120) - (d->i ? U(120) : U(30)), ah = h - U(70) - U(110);
+    float dmax = 1;
+    for (int k = 0; k < d->dn; k++) if (d->dmv[k] > dmax) dmax = d->dmv[k];
+    float ds = nice_step(dmax * 1.15f + 1, 6);
+    float d1 = ceilf((dmax * 1.15f + 1) / ds) * ds;
+    int t1 = axis_tmax(d), ts = nice_min_step(t1);
+
+#define XO(t) (ax + (int)((t) * (aw - 1) / t1))
+#define YD(v) (ay + ah - 1 - (int)((v) * (ah - 1) / d1))
+    char s[64];
+    for (float v = 0; v <= d1 + ds * 0.01f; v += ds) {
+        int yy = YD(v);
+        raster_hline(r, ax, ax + aw - 1, yy, 200);
+        snprintf(s, sizeof s, "%.0f", v);
+        rtext_draw_right(r, ax - U(14), yy - px * 5 / 8, s, px, 40, false);
+    }
+    int c0 = d->start_h * 60 + d->start_m;
+    for (int t = (ts - c0 % ts) % ts; t <= t1; t += ts) {
+        int xx = XO((float)t);
+        raster_vline(r, xx, ay, ay + ah - 1, 200);
+        int m = c0 + t;
+        snprintf(s, sizeof s, "%02d:%02d", (m / 60) % 24, m % 60);
+        rtext_draw_center(r, xx, ay + ah + U(12), s, px, 40, false);
+    }
+    for (int t = 0; t < U(3); t++) raster_rect(r, ax - t, ay - t, aw + 2 * t, ah + 2 * t, 0);
+    rtext_draw(r, ax - U(110), ay - U(62), "Δ, мВ", px, 0, true);
+    rtext_draw_center(r, ax + aw / 2, ay + ah + U(60), "час", px, 40, false);
+    for (int k = 1; k < d->dn; k++)
+        thick_line(r, XO(d->dt_min[k - 1]), YD(d->dmv[k - 1]), XO(d->dt_min[k]), YD(d->dmv[k]), U(4), 0);
+    int lx = ax + aw / 2 - U(500), ly = y + U(4);
+    thick_line(r, lx, ly + U(24), lx + U(70), ly + U(24), U(4), 0);
+    rtext_draw(r, lx + U(86), ly, "розбаланс комірок (найвища - найнижча), мВ", px, 0, false);
+#undef XO
+#undef YD
+}
+
 /* ------------------------------------------------------------ page */
 
 void doc_protocol_render(const doc_protocol_t *d, raster_t *r)
@@ -198,56 +248,66 @@ void doc_protocol_render(const doc_protocol_t *d, raster_t *r)
     }
     y += U(40);
 
-    /* body */
-    char vb[24] = "___", tb[24] = "___";
+    /* object, method, conditions */
+    char vb[24] = "___", tb[24];
     if (d->v_before > 0) snprintf(vb, sizeof vb, "%.1f", d->v_before);
-    if (d->temp_start > -100) snprintf(tb, sizeof tb, "%.0f", d->temp_start);
+    snprintf(tb, sizeof tb, "%.0f", d->temp_start > -100 ? d->temp_start : 20.0f);
     for (char *p = vb; *p; p++) if (*p == '.') *p = ',';
-    snprintf(s, sizeof s, " SN:%s, напруга батареї до тестування %sВ, температура на початок тесту %s°C",
-             d->serial, vb, tb);
-    rtext_run_t p1[] = { { "Дані про батарею:", true }, { s, false } };
-    y = rtext_para(r, L, y, W, p1, 2, body, lh, 0) + U(14);
+    snprintf(s, sizeof s, " акумуляторна батарея SN %s%s%s", d->serial,
+             d->battery_desc ? ", " : "", d->battery_desc ? d->battery_desc : "");
+    rtext_run_t p1[] = { { "Об'єкт випробувань:", true }, { s, false } };
+    y = rtext_para(r, L, y, W, p1, 2, body, lh, 0) + U(10);
     snprintf(s2, sizeof s2, " %s", d->equipment);
     rtext_run_t p2[] = { { "Обладнання для тестування:", true }, { s2, false } };
-    y = rtext_para(r, L, y, W, p2, 2, body, lh, 0) + U(14);
+    y = rtext_para(r, L, y, W, p2, 2, body, lh, 0) + U(10);
     rtext_run_t p3[] = { { "Мета випробувань:", true },
-                         { " Визначення електричної ємності акумуляторної батареї", false } };
-    y = rtext_para(r, L, y, W, p3, 2, body, lh, 0) + U(14);
-    snprintf(s2, sizeof s2, " Розряд постійним навантаженням струмом %dА", d->discharge_a);
+                         { " визначення електричної ємності акумуляторної батареї", false } };
+    y = rtext_para(r, L, y, W, p3, 2, body, lh, 0) + U(10);
+    snprintf(s2, sizeof s2, " розряд постійним струмом %d А", d->discharge_a);
     rtext_run_t p4[] = { { "Метод випробувань:", true }, { s2, false } };
-    y = rtext_para(r, L, y, W, p4, 2, body, lh, 0) + U(40);
+    y = rtext_para(r, L, y, W, p4, 2, body, lh, 0) + U(10);
+    snprintf(s, sizeof s, " початок %s, температура батареї %s °C, напруга до тестування %s В",
+             d->start_str[0] ? d->start_str : "—", tb, vb);
+    rtext_run_t p5[] = { { "Умови:", true }, { s, false } };
+    y = rtext_para(r, L, y, W, p5, 2, body, lh, 0) + U(40);
 
-    rtext_draw_center(r, (L + R) / 2, y, "Висновки", U(52), 0, true);
-    y += U(84);
-    snprintf(s2, sizeof s2, " %.0fА*г", d->capacity_ah);
-    rtext_run_t p5[] = { { d->in_progress ? "Знята ємність на момент друку:" : "Встановлена ємність:", true },
-                         { s2, false } };
-    y = rtext_para(r, L, y, W, p5, 2, body, lh, 0) + U(14);
-    char dur[64];
-    doc_duration_ua(d->discharge_min, dur, sizeof dur);
-    snprintf(s2, sizeof s2, " %s", dur);
-    rtext_run_t p6[] = { { "Час розряджання:", true }, { s2, false } };
-    y = rtext_para(r, L, y, W, p6, 2, body, lh, 0) + U(14);
-    rtext_run_t p7[] = { { "Прикріплюємо результати тестування Малюнок №1 та розрядний графік Малюнок №2.", false } };
-    y = rtext_para(r, L, y, W, p7, 1, body, lh, 0) + U(50);
-
-    /* figure 1 */
+    /* results */
     if (d->info_n > 0) {
-        y = info_table(r, L, y, W, d->info, d->info_n) + U(16);
-        rtext_draw_center(r, (L + R) / 2, y, "Малюнок №1", U(40), 0, true);
-        y += U(90);
+        rtext_draw_center(r, (L + R) / 2, y, "Результати", U(50), 0, true);
+        y += U(80);
+        y = info_table(r, L, y, W, d->info, d->info_n) + U(50);
+    }
+
+    /* conclusion: verdict and what influenced it */
+    if (d->verdict) {
+        rtext_draw_center(r, (L + R) / 2, y, "Висновок", U(50), 0, true);
+        y += U(80);
+        rtext_run_t pv[] = { { d->verdict, true } };
+        y = rtext_para(r, L, y, W, pv, 1, body, lh, 0) + U(12);
+        const int fpx = U(40), flh = U(56);
+        for (int i = 0; i < d->findings_n; i++) {
+            const doc_finding_t *f = &d->findings[i];
+            rtext_draw(r, L + U(10), y, f->level == DOC_F_CAUSE ? "!" : "•", fpx, 0, true);
+            rtext_run_t pf[] = { { f->text, f->level == DOC_F_CAUSE } };
+            y = rtext_para(r, L + U(50), y, W - U(50), pf, 1, fpx, flh, 0) + U(6);
+        }
+        y += U(40);
     }
 
     /* figure 2 */
     int sig_h = U(230);
     int gh = r->h - U(150) - sig_h - y - U(70);
-    if (d->n >= 2 && gh > U(500)) {
-        diagram(r, L, y, W, gh, d);
-        y += gh + U(6);
-        rtext_draw_center(r, (L + R) / 2, y, "Малюнок №2", U(40), 0, true);
-        y += U(70);
+    if (d->n >= 2 && gh > U(450)) {
+        if (d->dn >= 2 && gh > U(900)) {        /* discharge on top, imbalance below */
+            int g1 = gh * 58 / 100;
+            diagram(r, L, y, W, g1, d);
+            delta_diagram(r, L, y + g1 + U(10), W, gh - g1 - U(10), d);
+        } else {
+            diagram(r, L, y, W, gh, d);
+        }
+        y += gh + U(30);
     } else {
-        rtext_draw_center(r, (L + R) / 2, y + U(40), "Малюнок №2: немає даних графіка", U(40), 90, false);
+        rtext_draw_center(r, (L + R) / 2, y + U(40), "Розрядний графік: немає даних (тестер його вже перезаписав)", U(40), 90, false);
         y += U(130);
     }
 
