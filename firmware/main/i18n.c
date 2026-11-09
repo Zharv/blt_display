@@ -180,6 +180,7 @@ static const char *const STR[S__COUNT][2] = {
     [S_AR_NO_BMS]       = { "немає даних", "no BMS data for this test" },
     [S_AR_GRAPH_NOTE]   = { "Графік тестер зберігає лише за останні ~250 сторінок (при записі раз на хвилину це близько 3,5 доби) - у старіших тестів протокол буде без графіка.",
                             "The tester keeps only the last ~250 graph pages (about 3.5 days at one sample a minute) - older tests print without a graph." },
+    [S_AR_DETAILED]     = { "Детальний протокол (аналіз, таблиця, графік розбалансу)", "Detailed protocol (analysis, table, imbalance graph)" },
 };
 
 void i18n_init(void)

@@ -34,6 +34,9 @@ uint8_t health_chem_get(void);
 void health_chem_set(uint8_t chem);
 /* print the protocol of a recorder cycle (0xFFFF = current test); LVGL context */
 bool app_print_protocol(uint16_t cycle);
+/* protocol style: simple (default) or detailed (analysis, table, imbalance graph) */
+bool app_protocol_detailed(void);
+void app_protocol_set_detailed(bool on);
 /* "CELL n": toggle the highlight of cell n (1-based) as a tap would. */
 void snap_cell(int n);
 void snap_protocol(bool print, uint16_t cycle);   /* PROTO [n] / PROTOPRINT */

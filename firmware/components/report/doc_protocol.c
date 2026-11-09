@@ -248,11 +248,46 @@ void doc_protocol_render(const doc_protocol_t *d, raster_t *r)
     }
     y += U(40);
 
-    /* object, method, conditions */
     char vb[24] = "___", tb[24];
     if (d->v_before > 0) snprintf(vb, sizeof vb, "%.1f", d->v_before);
     snprintf(tb, sizeof tb, "%.0f", d->temp_start > -100 ? d->temp_start : 20.0f);
     for (char *p = vb; *p; p++) if (*p == '.') *p = ',';
+
+    if (!d->detailed) {
+        /* the simple protocol (the company's Word template) */
+        snprintf(s, sizeof s, " SN:%s%s%s, напруга батареї до тестування %sВ, температура на початок тесту %s°C",
+                 d->serial, d->battery_desc ? ", " : "", d->battery_desc ? d->battery_desc : "", vb, tb);
+        rtext_run_t q1[] = { { "Дані про батарею:", true }, { s, false } };
+        y = rtext_para(r, L, y, W, q1, 2, body, lh, 0) + U(14);
+        snprintf(s2, sizeof s2, " %s", d->equipment);
+        rtext_run_t q2[] = { { "Обладнання для тестування:", true }, { s2, false } };
+        y = rtext_para(r, L, y, W, q2, 2, body, lh, 0) + U(14);
+        rtext_run_t q3[] = { { "Мета випробувань:", true },
+                             { " Визначення електричної ємності акумуляторної батареї", false } };
+        y = rtext_para(r, L, y, W, q3, 2, body, lh, 0) + U(14);
+        snprintf(s2, sizeof s2, " Розряд постійним навантаженням струмом %dА", d->discharge_a);
+        rtext_run_t q4[] = { { "Метод випробувань:", true }, { s2, false } };
+        y = rtext_para(r, L, y, W, q4, 2, body, lh, 0) + U(40);
+
+        rtext_draw_center(r, (L + R) / 2, y, "Висновки", U(52), 0, true);
+        y += U(84);
+        snprintf(s2, sizeof s2, " %.0f А·год", d->capacity_ah);
+        rtext_run_t q5[] = { { d->in_progress ? "Знята ємність на момент друку:" : "Встановлена ємність:", true },
+                             { s2, false } };
+        y = rtext_para(r, L, y, W, q5, 2, body, lh, 0) + U(14);
+        char dur0[64];
+        doc_duration_ua(d->discharge_min, dur0, sizeof dur0);
+        snprintf(s2, sizeof s2, " %s", dur0);
+        rtext_run_t q6[] = { { "Час розряджання:", true }, { s2, false } };
+        y = rtext_para(r, L, y, W, q6, 2, body, lh, 0) + U(14);
+        if (d->stop_reason) {
+            snprintf(s2, sizeof s2, " %s", d->stop_reason);
+            rtext_run_t q7[] = { { "Причина зупинки тесту:", true }, { s2, false } };
+            y = rtext_para(r, L, y, W, q7, 2, body, lh, 0) + U(14);
+        }
+        y += U(50);
+    } else {
+    /* object, method, conditions */
     snprintf(s, sizeof s, " акумуляторна батарея SN %s%s%s", d->serial,
              d->battery_desc ? ", " : "", d->battery_desc ? d->battery_desc : "");
     rtext_run_t p1[] = { { "Об'єкт випробувань:", true }, { s, false } };
@@ -293,12 +328,13 @@ void doc_protocol_render(const doc_protocol_t *d, raster_t *r)
         }
         y += U(40);
     }
+    }   /* detailed */
 
     /* figure 2 */
     int sig_h = U(230);
     int gh = r->h - U(150) - sig_h - y - U(70);
     if (d->n >= 2 && gh > U(450)) {
-        if (d->dn >= 2 && gh > U(900)) {        /* discharge on top, imbalance below */
+        if (d->detailed && d->dn >= 2 && gh > U(900)) {   /* discharge on top, imbalance below */
             int g1 = gh * 58 / 100;
             diagram(r, L, y, W, g1, d);
             delta_diagram(r, L, y + g1 + U(10), W, gh - g1 - U(10), d);

@@ -156,7 +156,10 @@ static esp_err_t build_and_print(void)
 
     /* the object: chemistry, cells, nominal values */
     static char bdesc[160];
-    if (cells)
+    if (cells && !s_x.detailed)
+        snprintf(bdesc, sizeof bdesc, "%s %dS, номінальна напруга %.0f В, номінальна ємність %u А·год",
+                 ch == CHEM_LFP ? "Li-FePO4" : "Li-NMC", cells, cells * v_cell, rc->rated_ah);
+    else if (cells)
         snprintf(bdesc, sizeof bdesc, "%s, %dS, номінальна напруга %.0f В, номінальна ємність %u А·год",
                  ch == CHEM_LFP ? "Li-FePO4" : "Li-NMC", cells, cells * v_cell, rc->rated_ah);
     else
@@ -211,6 +214,17 @@ static esp_err_t build_and_print(void)
         .stop = stop, .v_end = t->n ? t->v[t->n - 1] : 0, .v_stop = blt_rec_stop_v(rc),
         .alarm_name = alarm_nm,
     };
+    /* one line for the simple protocol */
+    static char why[96];
+    switch (stop) {
+    case DOC_STOP_VSTOP:  snprintf(why, sizeof why, "досягнуто напругу кінця розряду"); break;
+    case DOC_STOP_BMS:    snprintf(why, sizeof why, "спрацював захист BMS батареї"); break;
+    case DOC_STOP_ALARM:  snprintf(why, sizeof why, "аварія тестера - %s", alarm_nm[0] ? alarm_nm : "?"); break;
+    case DOC_STOP_TIME:   snprintf(why, sizeof why, "обмеження часу розряду"); break;
+    case DOC_STOP_MANUAL: snprintf(why, sizeof why, "зупинка тестування"); break;
+    default:              why[0] = 0; break;
+    }
+
     static char verdict[320];
     static doc_finding_t finds[DOC_FINDINGS_MAX];
     int nf = doc_analyze(&facts, verdict, sizeof verdict, finds, DOC_FINDINGS_MAX);
@@ -224,11 +238,12 @@ static esp_err_t build_and_print(void)
         .discharge_a = rc->discharge_a, .capacity_ah = ah, .discharge_min = rc->t_dis_min,
         .in_progress = running,
         .battery_desc = bdesc,
+        .detailed = s_x.detailed, .stop_reason = why[0] ? why : NULL,
         .verdict = verdict, .findings = finds, .findings_n = nf,
         .info = info, .info_n = ni,
         .t_min = t->t_min, .v = t->v, .i = t->i, .n = t->n,
         .start_h = t->t0_h, .start_m = t->t0_mi, .v_stop = 0,   /* no stop-voltage line */
-        .dt_min = d_t, .dmv = d_mv, .dn = dn,
+        .dt_min = d_t, .dmv = d_mv, .dn = s_x.detailed ? dn : 0,
     };
     /* protocol number: from a serial YYYYMMDDNNNN -> DDMMYYYY-N, else the test date */
     const char *sn = rc->battery_id;
@@ -254,6 +269,8 @@ static esp_err_t build_and_print(void)
     ESP_LOGI(TAG, "DOCK start|%u:%u", d.start_h, d.start_m);
     ESP_LOGI(TAG, "DOCK v_stop|%.2f", d.v_stop);
     ESP_LOGI(TAG, "DOCK battery_desc|%s", bdesc);
+    ESP_LOGI(TAG, "DOCK detailed|%d", d.detailed);
+    if (d.stop_reason) ESP_LOGI(TAG, "DOCK stop_reason|%s", d.stop_reason);
     ESP_LOGI(TAG, "DOCK start_str|%s", d.start_str);
     ESP_LOGI(TAG, "DOCK verdict|%s", verdict);
     for (int k = 0; k < nf; k++) ESP_LOGI(TAG, "DOCF %d|%s", finds[k].level, finds[k].text);

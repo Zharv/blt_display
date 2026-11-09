@@ -41,7 +41,8 @@ typedef struct {
     float    capacity_ah;
     uint32_t discharge_min;
     bool     in_progress;         /* test still running: marked as an interim protocol */
-    const char *stop_reason;      /* unused (kept for the host preview) */
+    const char *stop_reason;      /* "Причина зупинки тесту" (simple layout), NULL = none */
+    bool        detailed;         /* + results table, conclusion analysis, imbalance graph */
     const char *battery_desc;     /* "Li-NMC, 20S, номінальна напруга 74 В, номінальна ємність 300 А·год" */
     char        start_str[24];    /* "06.11.2026 12:53" */
     /* conclusion: verdict + what influenced the result (doc_analyze) */

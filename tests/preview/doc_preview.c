@@ -97,6 +97,7 @@ int main(int argc, char **argv)
                 else if (!strcmp(k, "v_stop")) d.v_stop = (float)atof(v);
                 else if (!strcmp(k, "stop_reason")) d.stop_reason = strdup(v);
                 else if (!strcmp(k, "battery_desc")) d.battery_desc = strdup(v);
+                else if (!strcmp(k, "detailed")) d.detailed = atoi(v) != 0;
                 else if (!strcmp(k, "start_str")) snprintf(d.start_str, sizeof d.start_str, "%s", v);
                 else if (!strcmp(k, "verdict")) d.verdict = strdup(v);
             }

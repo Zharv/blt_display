@@ -356,6 +356,27 @@ static void health_load(void)
 
 uint8_t health_chem_get(void) { health_load(); return s_chem; }
 
+/* protocol style: simple (default) or detailed - NVS "doc"/"det" */
+static int8_t s_doc_detailed = -1;
+
+bool app_protocol_detailed(void)
+{
+    if (s_doc_detailed < 0) {
+        uint8_t v = 0;
+        nvs_handle_t h;
+        if (nvs_open("doc", NVS_READONLY, &h) == ESP_OK) { nvs_get_u8(h, "det", &v); nvs_close(h); }
+        s_doc_detailed = v ? 1 : 0;
+    }
+    return s_doc_detailed == 1;
+}
+
+void app_protocol_set_detailed(bool on)
+{
+    s_doc_detailed = on ? 1 : 0;
+    nvs_handle_t h;
+    if (nvs_open("doc", NVS_READWRITE, &h) == ESP_OK) { nvs_set_u8(h, "det", on); nvs_commit(h); nvs_close(h); }
+}
+
 void health_chem_set(uint8_t chem)
 {
     s_chem = chem > CHEM_LFP ? CHEM_AUTO : chem;
@@ -613,6 +634,7 @@ static void doc_extra_fill(doc_extra_t *x)
     memset(x, 0, sizeof *x);
     x->cycle = BLT_ARCH_CURRENT;
     x->chem = health_chem_get();
+    x->detailed = app_protocol_detailed();
     x->temp_start = s_temp_start;
     x->live_ah = o.tester_live ? o.capacity_ah : 0;
     if (o.bms_live && o.cell_count) {

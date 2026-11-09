@@ -208,6 +208,11 @@ static void item_cb(lv_event_t *e)
     show_detail();
 }
 
+static void detailed_cb(lv_event_t *e)
+{
+    app_protocol_set_detailed(lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED));
+}
+
 static void print_cb(lv_event_t *e)
 {
     (void)e;
@@ -299,7 +304,15 @@ lv_obj_t *ui_archive_create(void)
     lv_obj_t *note = ui_label(d, tr(S_AR_GRAPH_NOTE), 16, C_MUTED);
     lv_obj_set_width(note, dw - 40);
     lv_label_set_long_mode(note, LV_LABEL_LONG_WRAP);
-    lv_obj_align(note, LV_ALIGN_BOTTOM_LEFT, 20, -88);
+    lv_obj_align(note, LV_ALIGN_BOTTOM_LEFT, 20, -140);
+    lv_obj_t *cb = lv_checkbox_create(d);
+    lv_checkbox_set_text(cb, tr(S_AR_DETAILED));
+    lv_obj_set_style_text_font(cb, font_ua(20), 0);
+    lv_obj_set_style_text_color(cb, C_TXT, 0);
+    lv_obj_set_style_bg_color(cb, C_ACCENT, LV_PART_INDICATOR | LV_STATE_CHECKED);
+    if (app_protocol_detailed()) lv_obj_add_state(cb, LV_STATE_CHECKED);
+    lv_obj_add_event_cb(cb, detailed_cb, LV_EVENT_VALUE_CHANGED, NULL);
+    lv_obj_align(cb, LV_ALIGN_BOTTOM_LEFT, 20, -88);
     s_d_print = ui_button(d, "", dw - 40, 60, C_ACCENT, print_cb, NULL);
     lv_label_set_text_fmt(lv_obj_get_child(s_d_print, 0), "%s  %s", LV_SYMBOL_FILE, tr(S_AR_PRINT));
     lv_obj_align(s_d_print, LV_ALIGN_BOTTOM_MID, 0, -16);

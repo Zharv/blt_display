@@ -25,6 +25,7 @@ typedef struct {
     float    temp_start;        /* battery temperature at the start, < -100 = unknown */
     float    live_ah;           /* panel's interpolated Ah (0 = use the tester's) */
     uint8_t  chem;              /* chem_t setting: 0 auto, 1 NMC, 2 LFP */
+    bool     detailed;          /* detailed protocol (analysis, table, imbalance graph) */
 } doc_extra_t;
 
 /* Start in a background task. print=false only logs the page data (DOC* lines)
