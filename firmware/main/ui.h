@@ -34,6 +34,7 @@ typedef struct {
     uint8_t  i_set_a;       /* programmed discharge current */
     uint8_t  alarms;        /* active tester alarms */
     uint8_t  alarm_id;      /* the first one (1..48) */
+    uint8_t  alarm_bits[6]; /* active alarm bitmap (RI 0x5F..0x64), 28 masked out */
 
     /* BMS */
     bool     bms_present;

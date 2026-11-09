@@ -21,6 +21,7 @@ idf_component_register(
         "blt_archive.c"
         "doc_print.c"
         "test_sum.c"
+        "sn_fix.c"
         "sd_store.c"
         "sd_arch.c"
         "ui_archive.c"

@@ -12,6 +12,7 @@
 #include "blt_usb.h"
 #include "blt_archive.h"
 #include "test_sum.h"
+#include "sn_fix.h"
 #include "sd_arch.h"
 #include "sd_store.h"
 
@@ -29,7 +30,7 @@
 #define VIEW_MAX 600
 
 static lv_obj_t *s_scr, *s_status, *s_list, *s_refresh;
-static lv_obj_t *s_d_title, *s_d_hint, *s_d_rows, *s_d_print;
+static lv_obj_t *s_d_title, *s_d_hint, *s_d_rows, *s_d_print, *s_d_edit, *s_d_ta, *s_kb;
 
 static blt_arch_entry_t *s_cache;      /* tester records (PSRAM, ARCH_MAX), kept between refreshes */
 static int s_cache_n;
@@ -101,14 +102,16 @@ static void list_once(void)
     s_busy = false;
 }
 
-static void start_refresh(void)
+/* with_sync: also copy new finished tests to the card (not when the refresh
+ * itself follows a copy - that looped: refresh -> copy -> refresh -> ...) */
+static void start_refresh(bool with_sync)
 {
     if (s_busy) return;
     if (!tester_ready() && !sd_store_ready()) {
         lv_label_set_text(s_status, tr(S_AR_NO_TESTER));
         return;
     }
-    if (tester_ready()) sd_arch_request_sync();     /* copy new finished tests to the card */
+    if (with_sync && tester_ready()) sd_arch_request_sync();
     s_busy = true;
     s_result = 0;
     s_prog_done = 0;
@@ -121,13 +124,13 @@ static void start_refresh(void)
     xTaskNotifyGive(s_list_worker);
 }
 
-static void refresh_cb(lv_event_t *e) { (void)e; start_refresh(); }
+static void refresh_cb(lv_event_t *e) { (void)e; start_refresh(true); }
 
 static void screen_cb(lv_event_t *e)
 {
     (void)e;
     /* opening the tab refreshes a list older than a minute */
-    if (!s_busy && (s_loaded_us == 0 || esp_timer_get_time() - s_loaded_us > 60 * 1000000LL)) start_refresh();
+    if (!s_busy && (s_loaded_us == 0 || esp_timer_get_time() - s_loaded_us > 60 * 1000000LL)) start_refresh(true);
 }
 
 static int alarms_of(const blt_rec_t *r, int *first)
@@ -158,18 +161,26 @@ static void show_detail(void)
     lv_obj_clean(s_d_rows);
     if (s_sel < 0 || s_sel >= s_view_n) {
         lv_obj_add_flag(s_d_print, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(s_d_edit, LV_OBJ_FLAG_HIDDEN);
         lv_obj_clear_flag(s_d_hint, LV_OBJ_FLAG_HIDDEN);
         lv_label_set_text(s_d_title, "");
         return;
     }
     lv_obj_add_flag(s_d_hint, LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(s_d_print, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(s_d_edit, LV_OBJ_FLAG_HIDDEN);
     const blt_arch_entry_t *e = &s_view[s_sel];
     const blt_rec_t *r = &e->rec;
     char v[96];
     lv_label_set_text_fmt(s_d_title, "%s %u", tr(S_AR_TEST), r->pr_test);
 
-    add_row(tr(S_AR_SN), r->battery_id[0] ? r->battery_id : "—");
+    char fix[20];
+    if (sn_fix_get(e->n, fix, sizeof fix)) {
+        snprintf(v, sizeof v, "%s  (%s %s)", fix, tr(S_AR_SN_TESTER), r->battery_id[0] ? r->battery_id : "—");
+        add_row(tr(S_AR_SN), v);
+    } else {
+        add_row(tr(S_AR_SN), r->battery_id[0] ? r->battery_id : "—");
+    }
     snprintf(v, sizeof v, "%s", tr(running(e) ? S_AR_RUNNING : S_AR_DONE));
     add_row(tr(S_AR_STATE), v);
     snprintf(v, sizeof v, "%02u.%02u.20%02u %02u:%02u", r->dis_d, r->dis_mo, r->dis_y, r->dis_h, r->dis_mi);
@@ -208,6 +219,32 @@ static void item_cb(lv_event_t *e)
     show_detail();
 }
 
+static void rebuild_list(void);
+
+static void sn_edit_cb(lv_event_t *e)
+{
+    (void)e;
+    if (s_sel < 0 || s_sel >= s_view_n) return;
+    const blt_arch_entry_t *a = &s_view[s_sel];
+    char buf[20];
+    lv_textarea_set_text(s_d_ta, sn_fix_apply(a->n, a->rec.battery_id, buf, sizeof buf));
+    lv_obj_clear_flag(s_d_ta, LV_OBJ_FLAG_HIDDEN);
+    lv_keyboard_set_textarea(s_kb, s_d_ta);
+    lv_obj_clear_flag(s_kb, LV_OBJ_FLAG_HIDDEN);
+}
+
+static void sn_done_cb(lv_event_t *e)
+{
+    lv_event_code_t code = lv_event_get_code(e);
+    lv_obj_add_flag(s_d_ta, LV_OBJ_FLAG_HIDDEN);
+    if (code != LV_EVENT_READY || s_sel < 0 || s_sel >= s_view_n) return;
+    const blt_arch_entry_t *a = &s_view[s_sel];
+    const char *t = lv_textarea_get_text(s_d_ta);
+    /* the tester's own serial again = no correction */
+    sn_fix_set(a->n, strcmp(t, a->rec.battery_id) == 0 ? "" : t);
+    rebuild_list();
+}
+
 static void detailed_cb(lv_event_t *e)
 {
     app_protocol_set_detailed(lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED));
@@ -230,8 +267,10 @@ static void rebuild_list(void)
         const blt_arch_entry_t *e = &s_view[i];
         const blt_rec_t *r = &e->rec;
         char t[160];
+        char fixb[20];
+        const char *sn = sn_fix_apply(e->n, r->battery_id[0] ? r->battery_id : "—", fixb, sizeof fixb);
         snprintf(t, sizeof t, "%02u.%02u.20%02u %02u:%02u    %s\n%u %s  ·  %u:%02u  ·  %s %u%s%s",
-                 r->dis_d, r->dis_mo, r->dis_y, r->dis_h, r->dis_mi, r->battery_id[0] ? r->battery_id : "—",
+                 r->dis_d, r->dis_mo, r->dis_y, r->dis_h, r->dis_mi, sn,
                  r->ah_dis, tr(S_U_AH), r->t_dis_min / 60, r->t_dis_min % 60, tr(S_AR_TEST_SHORT), r->pr_test,
                  running(e) ? "  ·  " : "", running(e) ? tr(S_AR_RUNNING) : "");
         lv_obj_t *b = ui_list_item(s_list, e->on_sd ? LV_SYMBOL_SD_CARD : LV_SYMBOL_FILE, t, running(e) ? C_GREEN : C_TXT, item_cb, (void *)(intptr_t)i);
@@ -254,8 +293,8 @@ static void poll_cb(lv_timer_t *t)
     bool syncing = sd_arch_sync_busy(&sd_done, &sd_total);
     if (syncing && sd_total) {
         lv_label_set_text_fmt(s_status, tr(S_AR_SYNCING), sd_done, sd_total);
-    } else if (was_syncing && !syncing && lv_screen_active() == s_scr) {
-        start_refresh();                    /* show the SD marks of what was just copied */
+    } else if (was_syncing && !syncing && sd_total > 0 && lv_screen_active() == s_scr) {
+        start_refresh(false);               /* show the SD marks of what was just copied */
     }
     was_syncing = syncing;
     if (s_result == 1) {
@@ -296,6 +335,20 @@ lv_obj_t *ui_archive_create(void)
     lv_obj_set_pos(s_d_title, 20, 16);
     s_d_hint = ui_label(d, tr(S_AR_PICK), 20, C_SUB);
     lv_obj_align(s_d_hint, LV_ALIGN_CENTER, 0, -20);
+    s_d_edit = ui_button(d, tr(S_AR_SN_EDIT), 200, 44, C_CARD2, sn_edit_cb, NULL);
+    lv_obj_align(s_d_edit, LV_ALIGN_TOP_RIGHT, -16, 10);
+    lv_obj_add_flag(s_d_edit, LV_OBJ_FLAG_HIDDEN);
+    s_d_ta = lv_textarea_create(d);
+    lv_textarea_set_one_line(s_d_ta, true);
+    lv_textarea_set_max_length(s_d_ta, 16);
+    lv_textarea_set_accepted_chars(s_d_ta, "0123456789");
+    lv_obj_set_style_text_font(s_d_ta, font_ua(24), 0);
+    lv_obj_set_size(s_d_ta, 300, 52);
+    lv_obj_align(s_d_ta, LV_ALIGN_TOP_RIGHT, -228, 6);
+    lv_obj_add_flag(s_d_ta, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_event_cb(s_d_ta, sn_done_cb, LV_EVENT_READY, NULL);
+    lv_obj_add_event_cb(s_d_ta, sn_done_cb, LV_EVENT_CANCEL, NULL);
+
     s_d_rows = lv_obj_create(d);
     lv_obj_remove_style_all(s_d_rows);
     lv_obj_set_pos(s_d_rows, 20, 60);
@@ -317,6 +370,8 @@ lv_obj_t *ui_archive_create(void)
     lv_label_set_text_fmt(lv_obj_get_child(s_d_print, 0), "%s  %s", LV_SYMBOL_FILE, tr(S_AR_PRINT));
     lv_obj_align(s_d_print, LV_ALIGN_BOTTOM_MID, 0, -16);
     lv_obj_add_flag(s_d_print, LV_OBJ_FLAG_HIDDEN);
+
+    s_kb = ui_keyboard(s_scr, LV_KEYBOARD_MODE_NUMBER);
 
     lv_timer_create(poll_cb, 300, NULL);
     return s_scr;

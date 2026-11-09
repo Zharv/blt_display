@@ -5,6 +5,7 @@
 #include "print_job.h"
 #include "bms_ble.h"
 #include "test_sum.h"
+#include "sn_fix.h"
 #include "health.h"
 #include "sd_arch.h"
 #include "hist.h"
@@ -246,7 +247,8 @@ static esp_err_t build_and_print(void)
         .dt_min = d_t, .dmv = d_mv, .dn = s_x.detailed ? dn : 0,
     };
     /* protocol number: from a serial YYYYMMDDNNNN -> DDMMYYYY-N, else the test date */
-    const char *sn = rc->battery_id;
+    static char snfix[20];
+    const char *sn = sn_fix_apply(rc->pr_cycle, rc->battery_id, snfix, sizeof snfix);
     bool digits = strlen(sn) == 12;
     for (int k = 0; digits && k < 12; k++) digits = sn[k] >= '0' && sn[k] <= '9';
     if (digits) snprintf(d.number, sizeof d.number, "%.2s%.2s%.4s-%d", sn + 6, sn + 4, sn, atoi(sn + 8));

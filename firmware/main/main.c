@@ -41,6 +41,7 @@
 #include "print_job.h"
 #include "doc_print.h"
 #include "test_sum.h"
+#include "sn_fix.h"
 #include "sd_store.h"
 #include "sd_arch.h"
 #include "psram_task.h"
@@ -210,6 +211,7 @@ static void fill_sample(online_sample_t *o)
         int first = 0;
         o->alarms = (uint8_t)blt_live_alarm_count(&la, &first);
         o->alarm_id = (uint8_t)first;
+        memcpy(o->alarm_bits, la.alarms, sizeof o->alarm_bits);
         o->state = l.state == BLT_ST_DISCHARGE || l.state == BLT_ST_CHARGE ? TS_DISCHARGE :
                    l.state == BLT_ST_DISCHARGE_PAUSE || l.state == BLT_ST_CHARGE_PAUSE ? TS_REST :
                    l.state == BLT_ST_END ? TS_DONE : TS_IDLE;
@@ -309,6 +311,10 @@ typedef struct {
     int16_t  temp0_dc;      /* 0.1 degC, INT16_MIN = unknown */
     uint8_t  valid;
     uint8_t  at_start;      /* taken in the first 10 min (not after joining late) */
+    uint8_t  alarm0_set;
+    uint8_t  alarm0[6];     /* tester alarm bits already set when the test was first seen:
+                               the tester keeps e.g. 41 "stopped by the battery" from the
+                               previous test, so only bits that appear later count */
 } health_base_t;
 
 static health_base_t s_hb;
@@ -401,6 +407,11 @@ static void health_tick(const online_sample_t *o)
             memset(&s_hb, 0, sizeof s_hb);
             s_hb.test = o->test_no;
         }
+        if (!s_hb.alarm0_set) {
+            memcpy(s_hb.alarm0, o->alarm_bits, sizeof s_hb.alarm0);
+            s_hb.alarm0_set = 1;
+            health_base_save();
+        }
         if (!s_hb.valid && o->bms_live && o->cell_count >= 2 && o->elapsed_s >= 60) {
             s_hb.valid = 1;
             s_hb.delta0_mv = o->imbalance_mv;
@@ -451,8 +462,17 @@ static void health_tick(const online_sample_t *o)
     memset(&in, 0, sizeof in);
     in.discharging = discharging;
     in.elapsed_s = o->elapsed_s;
-    in.alarms = o->alarms;
-    in.alarm_id = o->alarm_id;
+    /* only alarms that appeared during this test (see health_base_t.alarm0) */
+    in.alarms = 0;
+    in.alarm_id = 0;
+    if (o->tester_live && s_hb.test == o->test_no && s_hb.alarm0_set) {
+        for (int b = 0; b < 6; b++)
+            for (int i = 0; i < 8; i++)
+                if ((o->alarm_bits[b] & ~s_hb.alarm0[b]) & (1u << i)) {
+                    if (!in.alarms) in.alarm_id = 8 * b + i + 1;
+                    in.alarms++;
+                }
+    }
     in.v_tester = o->tester_live ? o->voltage_v : 0;
     in.i_tester = o->tester_live ? fabsf(o->current_a) : 0;
     in.i_set = o->tester_live ? o->i_set_a : 0;
@@ -915,6 +935,7 @@ void app_main(void)
     blt_usb_start();     /* tester on USB - passive until reads are allowed */
     blt_live_poll_restore();
     test_sum_load();                     /* NVS -> RAM before any PSRAM-stack task reads it */
+    sn_fix_load();
     psram_task(blt_poll_task, "blt_poll", 6144, NULL, 4, NULL, tskNO_AFFINITY);
     psram_task(sd_log_task, "sd_log", 6144, NULL, 2, NULL, tskNO_AFFINITY);
 
