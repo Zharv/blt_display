@@ -57,6 +57,12 @@ esp_err_t blt_usb_read_block(blt_cmd_t cmd, uint32_t addr, uint8_t *dst, uint16_
 void blt_usb_arm_write(void);
 esp_err_t blt_usb_write_block(uint32_t addr, const uint8_t *data, uint16_t len);
 
+/* RE 0x03 "apply after write": the tester reloads settings + battery ID from
+ * EEPROM into RAM. The only action command the panel may send (user's OK,
+ * 2026-11-09); arm once, used by blt_prepare in START only. */
+void blt_usb_arm_apply(void);
+esp_err_t blt_usb_apply_after_write(void);
+
 #ifdef __cplusplus
 }
 #endif

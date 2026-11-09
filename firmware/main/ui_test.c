@@ -22,7 +22,7 @@
 
 extern bool blt_live_latest(blt_live_t *out, uint32_t *age_ms);
 
-static lv_obj_t *s_scr, *s_state, *s_now, *s_sn, *s_ah, *s_write, *s_result, *s_kb;
+static lv_obj_t *s_scr, *s_state, *s_now, *s_work, *s_sn, *s_ah, *s_write, *s_result, *s_kb;
 
 /* worker results, applied by the LVGL timer */
 static volatile int s_read_done;            /* 1 = values below are fresh */
@@ -115,6 +115,16 @@ static void poll_cb(lv_timer_t *t)
     else lv_label_set_text_fmt(s_state, "%s:  %s", tr(S_PREP_STATE), blt_state_name_it(l.state));
     lv_obj_set_style_text_color(s_state, start ? C_GREEN : C_AMBER, 0);
 
+    /* the serial the next test will record (the tester's RAM copy, RI 0x76);
+     * amber when it differs from what is stored in its EEPROM */
+    if (live) {
+        bool differs = s_cur_sn[0] && strcmp(l.battery_id, s_cur_sn) != 0;
+        lv_label_set_text_fmt(s_work, "%s:  %s", tr(S_PREP_WORKING), l.battery_id[0] ? l.battery_id : "—");
+        lv_obj_set_style_text_color(s_work, differs ? C_AMBER : C_TXT, 0);
+    } else {
+        lv_label_set_text(s_work, "");
+    }
+
     /* read the tester's current values once it is reachable (and after writes) */
     static bool asked;
     if (live && !asked && !s_busy && lv_screen_active() == s_scr) {
@@ -174,6 +184,8 @@ lv_obj_t *ui_test_create(void)
     lv_obj_set_pos(s_state, 16, 56);
     s_now = ui_label(c, "", 20, C_SUB);
     lv_obj_set_pos(s_now, 16, 88);
+    s_work = ui_label(c, "", 20, C_TXT);
+    lv_obj_set_pos(s_work, 660, 88);
 
     s_sn = field(c, 136, S_PREP_SERIAL, 16);
     lv_obj_t *nb = ui_button(c, tr(S_PREP_NEXT_SN), 200, 56, lv_color_hex(0x0f1630), new_sn_cb, NULL);

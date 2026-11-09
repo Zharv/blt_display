@@ -331,6 +331,34 @@ void blt_usb_arm_write(void)
  * the battery-ID block (0x40, 50 B) and the settings block (0x100, 62 B).
  * One write per arming (blt_prepare arms it after checking the tester is in
  * START). Anything else is refused. */
+/* The only action command, allowed by the user: RE 0x03 "apply after write".
+ * The tester re-reads the settings block and the battery-ID block from its
+ * EEPROM into RAM (a WD of the ID block changes the EEPROM only, so without
+ * this the next test still runs with the old serial). docs/
+ * BLT_FIRMWARE_COMMANDS.md 4.4. One shot per arming; blt_prepare arms it only
+ * in START, after a verified write. Every other RE sub-code stays forbidden
+ * (0x01 wipes the test record, 0x70 reboots). */
+static volatile bool s_apply_armed;
+
+void blt_usb_arm_apply(void)
+{
+    s_apply_armed = true;
+}
+
+esp_err_t blt_usb_apply_after_write(void)
+{
+    bool armed = s_apply_armed;
+    s_apply_armed = false;
+    if (!armed) { ESP_LOGE(TAG, "RE 03 refused: not armed"); return ESP_ERR_NOT_ALLOWED; }
+    if (!s_dev) return ESP_ERR_INVALID_STATE;
+    uint8_t frame[BLT_REQ_HEADER_LEN + 8];
+    size_t n = blt_build_frame(frame, sizeof frame, BLT_NODE_DEFAULT, BLT_CMD_RE, 0x03, NULL, 0);
+    if (!n) return ESP_ERR_INVALID_SIZE;
+    ESP_LOGW(TAG, "RE 03: apply after write (reload settings + battery ID into RAM)");
+    blt_err_t be = BLT_OK;
+    return txn(BLT_CMD_RE, 0x03, frame, n, NULL, &be, 3000);
+}
+
 esp_err_t blt_usb_write_block(uint32_t addr, const uint8_t *data, uint16_t len)
 {
     bool armed = s_write_armed;

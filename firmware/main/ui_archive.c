@@ -21,6 +21,8 @@
 
 #include "esp_heap_caps.h"
 #include "esp_timer.h"
+#include "esp_log.h"
+#include "bsp/esp-bsp.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "psram_task.h"
@@ -375,4 +377,21 @@ lv_obj_t *ui_archive_create(void)
 
     lv_timer_create(poll_cb, 300, NULL);
     return s_scr;
+}
+
+/* dev console: ARSEL n selects list item n, AREDIT presses "Змінити SN" */
+void ui_archive_dev(int sel, bool edit)
+{
+    bsp_display_lock(0);
+    if (sel >= 0 && sel < s_view_n) {
+        s_sel = sel;
+        show_detail();
+    }
+    if (edit) sn_edit_cb(NULL);
+    lv_obj_update_layout(s_scr);
+    ESP_LOGI("ui_arch", "kb %p hidden=%d parent_ok=%d x=%d y=%d w=%d h=%d; ta hidden=%d; active_scr_ok=%d",
+             (void *)s_kb, lv_obj_has_flag(s_kb, LV_OBJ_FLAG_HIDDEN), lv_obj_get_parent(s_kb) == s_scr,
+             (int)lv_obj_get_x(s_kb), (int)lv_obj_get_y(s_kb), (int)lv_obj_get_width(s_kb), (int)lv_obj_get_height(s_kb),
+             lv_obj_has_flag(s_d_ta, LV_OBJ_FLAG_HIDDEN), lv_screen_active() == s_scr);
+    bsp_display_unlock();
 }

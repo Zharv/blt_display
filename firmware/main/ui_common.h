@@ -17,6 +17,7 @@ lv_obj_t *ui_list_item(lv_obj_t *list, const char *icon, const char *txt, lv_col
                        lv_event_cb_t cb, void *user);
 lv_obj_t *ui_keyboard(lv_obj_t *scr, lv_keyboard_mode_t mode);  /* hidden, above the tab bar */
 lv_obj_t *ui_archive_create(void);
+void ui_archive_dev(int sel, bool edit);   /* dev console */
 
 #ifdef __cplusplus
 }

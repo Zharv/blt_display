@@ -116,7 +116,7 @@ static const char *const STR[S__COUNT][2] = {
     [S_PREP_AH]         = { "Запланована ємність, А·год", "Planned capacity, Ah" },
     [S_PREP_WRITE]      = { "Записати в тестер", "Write to the tester" },
     [S_PREP_WRITING]    = { "записую…", "writing…" },
-    [S_PREP_NOTE]       = { "Записуються лише серійний номер і ємність (Rated Capacity), і лише коли тестер у стані START - тест ще не запущено. Після запису значення читаються назад і звіряються.",
+    [S_PREP_NOTE]       = { "Записуються лише серійний номер і ємність (Rated Capacity), і лише коли тестер у стані START - тест ще не запущено. Після запису значення читаються назад і звіряються, тестер перечитує їх у робочу пам'ять (RE 03), і дисплей перевіряє номер, з яким піде тест.",
                             "Only the serial number and the rated capacity are written, and only while the tester is in START (no test running). The values are read back and compared." },
     [S_PREP_NO_TESTER]  = { "тестер не відповідає", "tester not responding" },
     [S_PREP_BUSY]       = { "тест іде - запис лише в стані START", "a test is running - writing only in START" },
@@ -183,6 +183,8 @@ static const char *const STR[S__COUNT][2] = {
     [S_AR_DETAILED]     = { "Детальний протокол (аналіз, таблиця, графік розбалансу)", "Detailed protocol (analysis, table, imbalance graph)" },
     [S_AR_SN_EDIT]      = { "Змінити SN", "Edit SN" },
     [S_AR_SN_TESTER]    = { "у тестері", "tester:" },
+    [S_PREP_RAM_OLD]    = { "тестер досі працює зі старим номером", "the tester still uses the old serial" },
+    [S_PREP_WORKING]    = { "Тест піде з номером", "The test will run with" },
 };
 
 void i18n_init(void)

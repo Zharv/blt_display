@@ -4,6 +4,7 @@
 #include "print_job.h"
 #include "sd_store.h"
 #include "doc_print.h"
+#include "ui_common.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -11,6 +12,8 @@
 
 #include "driver/uart.h"
 #include "driver/uart_vfs.h"
+#include "driver/usb_serial_jtag.h"
+#include "driver/usb_serial_jtag_vfs.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -49,7 +52,25 @@ static size_t enc_row(const uint16_t *px, int w, uint8_t *out)
     return o;
 }
 
-static void send_str(const char *s) { uart_write_bytes(SNAP_UART, s, strlen(s)); }
+/* the console works on UART0 (CH340 port) and on the chip's own USB
+ * Serial/JTAG port; replies go back where the command came from */
+typedef enum { T_UART = 0, T_USB } tport_t;
+static tport_t s_cur;
+static bool s_usb_ok;
+
+static void tx(const void *d, size_t n)
+{
+    if (s_cur == T_UART) uart_write_bytes(SNAP_UART, d, n);
+    else usb_serial_jtag_write_bytes(d, n, pdMS_TO_TICKS(2000));
+}
+
+static void tx_wait(uint32_t ms)
+{
+    if (s_cur == T_UART) uart_wait_tx_done(SNAP_UART, pdMS_TO_TICKS(ms));
+    else usb_serial_jtag_wait_tx_done(pdMS_TO_TICKS(ms));
+}
+
+static void send_str(const char *s) { tx(s, strlen(s)); }
 
 static void do_snap(void)
 {
@@ -70,21 +91,21 @@ static void do_snap(void)
     char hdr[64];
     snprintf(hdr, sizeof hdr, "\nSNAP-BAUD %d\n", SNAP_BAUD);
     send_str(hdr);
-    uart_wait_tx_done(SNAP_UART, pdMS_TO_TICKS(200));
+    tx_wait(200);
     vTaskDelay(pdMS_TO_TICKS(300));
-    uart_set_baudrate(SNAP_UART, SNAP_BAUD);
+    if (s_cur == T_UART) uart_set_baudrate(SNAP_UART, SNAP_BAUD);   /* USB: no baud rate */
     vTaskDelay(pdMS_TO_TICKS(300));
 
     snprintf(hdr, sizeof hdr, "\nSNAP-BEGIN %d %d %u\n", w, h, (unsigned)total);
     send_str(hdr);
     for (int y = 0; y < h; y++) {
         size_t n = enc_row((const uint16_t *)(db->data + y * stride), w, row);
-        uart_write_bytes(SNAP_UART, row, n);
+        tx(row, n);
     }
     send_str("\nSNAP-END\n");
-    uart_wait_tx_done(SNAP_UART, pdMS_TO_TICKS(30000));
+    tx_wait(30000);
     vTaskDelay(pdMS_TO_TICKS(300));
-    uart_set_baudrate(SNAP_UART, BASE_BAUD);
+    if (s_cur == T_UART) uart_set_baudrate(SNAP_UART, BASE_BAUD);
     esp_log_level_set("*", ESP_LOG_INFO);
 
     free(row);
@@ -92,21 +113,35 @@ static void do_snap(void)
     ESP_LOGI(TAG, "snapshot %dx%d sent (%u bytes)", w, h, (unsigned)total);
 }
 
+static void run_cmd(const char *line);
+
 static void snap_task(void *arg)
 {
     (void)arg;
-    char line[48];
-    int len = 0;
+    char line[2][48];
+    int len[2] = { 0, 0 };
     for (;;) {
-        uint8_t c;
-        if (uart_read_bytes(SNAP_UART, &c, 1, portMAX_DELAY) != 1) continue;
-        if (c == '\r') continue;
-        if (c != '\n') {
-            if (len < (int)sizeof line - 1) line[len++] = (char)c;
-            continue;
+        /* one task, both ports (each read waits up to 20 ms) */
+        for (int t = 0; t < 2; t++) {
+            uint8_t c;
+            int r = t == T_UART ? uart_read_bytes(SNAP_UART, &c, 1, pdMS_TO_TICKS(20))
+                  : (s_usb_ok ? usb_serial_jtag_read_bytes(&c, 1, pdMS_TO_TICKS(20)) : 0);
+            if (r != 1 || c == '\r') continue;
+            if (c != '\n') {
+                if (len[t] < (int)sizeof line[t] - 1) line[t][len[t]++] = (char)c;
+                continue;
+            }
+            line[t][len[t]] = '\0';
+            len[t] = 0;
+            s_cur = (tport_t)t;
+            run_cmd(line[t]);
         }
-        line[len] = '\0';
-        len = 0;
+    }
+}
+
+static void run_cmd(const char *line)
+{
+    {
         if (strcmp(line, "SNAP") == 0) do_snap();
         else if (strncmp(line, "TAB ", 4) == 0) snap_nav(atoi(line + 4));
         else if (strncmp(line, "CHART ", 6) == 0) snap_chart(atoi(line + 6));
@@ -133,7 +168,8 @@ static void snap_task(void *arg)
         else if (strcmp(line, "PROTO") == 0) snap_protocol(false, 0xFFFF);
         else if (strncmp(line, "PROTO ", 6) == 0) snap_protocol(false, (uint16_t)atoi(line + 6));
         else if (strcmp(line, "PROTOPRINT") == 0) snap_protocol(true, 0xFFFF);
-
+        else if (strncmp(line, "ARSEL ", 6) == 0) ui_archive_dev(atoi(line + 6), false);
+        else if (strcmp(line, "AREDIT") == 0) ui_archive_dev(-1, true);
     }
 }
 
@@ -142,6 +178,15 @@ void snap_start(void)
     if (!uart_is_driver_installed(SNAP_UART)) {
         if (uart_driver_install(SNAP_UART, 512, 4096, 0, NULL, 0) != ESP_OK) return;
         uart_vfs_dev_use_driver(SNAP_UART);
+    }
+    if (!usb_serial_jtag_is_driver_installed()) {
+        usb_serial_jtag_driver_config_t uc = USB_SERIAL_JTAG_DRIVER_CONFIG_DEFAULT();
+        if (usb_serial_jtag_driver_install(&uc) == ESP_OK) {
+            usb_serial_jtag_vfs_use_driver();
+            s_usb_ok = true;
+        }
+    } else {
+        s_usb_ok = true;
     }
     xTaskCreate(snap_task, "snap", 4096, NULL, 2, NULL);
 }

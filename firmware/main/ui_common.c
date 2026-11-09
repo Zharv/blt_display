@@ -87,7 +87,9 @@ lv_obj_t *ui_keyboard(lv_obj_t *scr, lv_keyboard_mode_t mode)
     lv_obj_t *kb = lv_keyboard_create(scr);
     lv_keyboard_set_mode(kb, mode);
     lv_obj_set_size(kb, SCR_W - 2 * PAD, 300);
-    lv_obj_set_pos(kb, PAD, SCR_H - BAR_BOT_H - 8 - 300);
+    /* LVGL 9 creates the keyboard aligned BOTTOM_MID: set_pos would be an
+     * offset from that (it ended below the screen) - align it explicitly */
+    lv_obj_align(kb, LV_ALIGN_BOTTOM_MID, 0, -(BAR_BOT_H + 8));
     lv_obj_set_style_text_font(kb, font_ua(24), 0);
     lv_obj_add_event_cb(kb, kb_event_cb, LV_EVENT_ALL, NULL);
     lv_obj_add_flag(kb, LV_OBJ_FLAG_HIDDEN);
