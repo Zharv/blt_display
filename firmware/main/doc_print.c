@@ -3,6 +3,7 @@
 #include "doc.h"
 #include "rtext.h"
 #include "print_job.h"
+#include "netw.h"
 #include "bms_ble.h"
 #include "test_sum.h"
 #include "sn_fix.h"
@@ -351,6 +352,8 @@ static void doc_task(void *arg)
         if (!font_ok) font_ok = rtext_init(ttf_start, (size_t)(ttf_end - ttf_start));
         raster_yield = doc_yield;
         esp_err_t e;
+        bool net = s_test_page || s_print;
+        if (net) netw_acquire(0);           /* join the printer's Wi-Fi while the page is built */
         if (s_test_page) {
             e = test_page();
             ESP_LOGI(TAG, "test page: %s", esp_err_to_name(e));
@@ -359,6 +362,7 @@ static void doc_task(void *arg)
             ESP_LOGI(TAG, "protocol %s: %s", s_print ? "print" : "dump", esp_err_to_name(e));
             if (s_done) s_done(e);
         }
+        if (net) netw_release();
         raster_yield = NULL;
         s_busy = false;
     }

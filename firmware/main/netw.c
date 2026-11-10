@@ -15,12 +15,14 @@
 #include "nvs_flash.h"
 #include "nvs.h"
 #include "esp_netif.h"
+#include "esp_netif_sntp.h"
 #include "esp_event.h"
 #include "esp_hosted.h"
 #include "esp_wifi_remote.h"
 #include "mdns.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
+#include "freertos/semphr.h"
 #include "freertos/timers.h"
 #include "freertos/task.h"
 
@@ -37,7 +39,21 @@ static volatile bool s_have_creds;
 static char s_ssid[33];
 static esp_ip4_addr_t s_ip;
 static esp_ip4_addr_t s_gw;
-static bool s_diag_done;
+
+/* Wi-Fi is joined on demand. The C6 has one radio for Wi-Fi and BLE: a station
+ * that stays associated with the printer's Wi-Fi Direct costs the BMS link
+ * airtime (dropped notifications, failed connects). So the panel joins the
+ * saved network only while somebody needs it (netw_acquire .. netw_release:
+ * a print job, a printer search) and leaves a little later. */
+#define LINGER_MS        15000      /* after the last user: a second print reuses the link */
+#define LINGER_SETUP_MS  60000      /* after "Connect" on the Wi-Fi screen: time to see the result */
+static volatile bool s_want;        /* the network is needed now */
+static volatile bool s_ready;       /* netw_start() done */
+static int s_users;
+static portMUX_TYPE s_mux = portMUX_INITIALIZER_UNLOCKED;
+static SemaphoreHandle_t s_lock;
+static TimerHandle_t s_idle_t;
+static bool s_sntp;
 
 /* Non-blocking TCP connect with a timeout; logs reachability + error detail. */
 static bool conntest(const char *ip, uint16_t port, int timeout_ms)
@@ -90,6 +106,11 @@ static void dump_arp(void)
 static void diag_task(void *arg)
 {
     (void)arg;
+    if (!netw_acquire(20000)) {
+        ESP_LOGW(TAG, "connectivity test: not connected");
+        netw_release();
+        vTaskDelete(NULL);
+    }
     char gw[16];
     snprintf(gw, sizeof gw, IPSTR, IP2STR(&s_gw));
     uint8_t mac[6] = {0};
@@ -121,7 +142,13 @@ static void diag_task(void *arg)
              conntest("192.168.0.108", 445, 4000) ? "OK" : "FAIL");
     ESP_LOGW(TAG, "  arp table:");
     dump_arp();
+    netw_release();
     vTaskDelete(NULL);
+}
+
+void netw_diag(void)
+{
+    xTaskCreate(diag_task, "netdiag", 4096, NULL, 4, NULL);
 }
 
 static void save_creds(const char *ssid, const char *pass)
@@ -157,11 +184,11 @@ static void apply_config(const char *ssid, const char *pass)
 static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
     if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START) {
-        if (s_have_creds) esp_wifi_connect();
+        if (s_have_creds && s_want) esp_wifi_connect();
     } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
         s_connected = false;
         xEventGroupClearBits(s_events, BIT_CONNECTED);
-        if (s_have_creds && s_retry < WIFI_RETRY_MAX) {
+        if (s_want && s_have_creds && s_retry < WIFI_RETRY_MAX) {
             esp_wifi_connect();
             s_retry++;
             ESP_LOGI(TAG, "retry connect (%d)", s_retry);
@@ -174,20 +201,19 @@ static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data)
         s_retry = 0;
         s_connected = true;
         xEventGroupSetBits(s_events, BIT_CONNECTED);
-        if (!s_diag_done) {
-            s_diag_done = true;
-            xTaskCreate(diag_task, "netdiag", 4096, NULL, 4, NULL);
-        }
     }
 }
 
 static void retry_cb(TimerHandle_t t);
+static void idle_cb(TimerHandle_t t);
 
 bool netw_start(void)
 {
     static TimerHandle_t rt;
     if (!rt && (rt = xTimerCreate("wifi_rt", pdMS_TO_TICKS(30000), pdTRUE, NULL, retry_cb))) xTimerStart(rt, 0);
     s_events = xEventGroupCreate();
+    s_lock = xSemaphoreCreateMutex();
+    s_idle_t = xTimerCreate("wifi_idle", pdMS_TO_TICKS(LINGER_MS), pdFALSE, NULL, idle_cb);
     ESP_LOGI(TAG, "heap before hosted: internal %u (largest %u), dma %u, psram %u",
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
              (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
@@ -251,7 +277,65 @@ bool netw_start(void)
 
     mdns_init();
     mdns_hostname_set("blt-display");
+    s_ready = true;
+    ESP_LOGI(TAG, "Wi-Fi ready; \"%s\" is joined on demand", s_ssid);
     return true;
+}
+
+bool netw_is_joining(void) { return s_want && !s_connected; }
+
+/* Join the saved network for the caller. timeout_ms 0: only start joining.
+ * Always pair with netw_release(), also when it returns false. */
+bool netw_acquire(uint32_t timeout_ms)
+{
+    taskENTER_CRITICAL(&s_mux);
+    s_users++;
+    taskEXIT_CRITICAL(&s_mux);
+    if (!s_ready || !s_have_creds) return false;
+    xTimerStop(s_idle_t, 0);
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    if (!s_want) {
+        ESP_LOGI(TAG, "joining \"%s\"", s_ssid);
+        s_want = true;
+        s_retry = 0;
+        esp_wifi_connect();
+    } else if (!s_connected && s_retry >= WIFI_RETRY_MAX) {
+        s_retry = 0;
+        esp_wifi_connect();
+    }
+    xSemaphoreGive(s_lock);
+    bool up = timeout_ms ? netw_wait_connected(timeout_ms) : s_connected;
+    /* a network with internet (not the printer's own): set the clock once */
+    if (up && !s_sntp && strncmp(s_ssid, "DIRECT-", 7) != 0) {
+        s_sntp = true;
+        esp_sntp_config_t sc = ESP_NETIF_SNTP_DEFAULT_CONFIG("pool.ntp.org");
+        esp_netif_sntp_init(&sc);
+    }
+    return up;
+}
+
+void netw_release(void)
+{
+    taskENTER_CRITICAL(&s_mux);
+    if (s_users > 0) s_users--;
+    int left = s_users;
+    taskEXIT_CRITICAL(&s_mux);
+    if (left == 0 && s_idle_t) xTimerChangePeriod(s_idle_t, pdMS_TO_TICKS(LINGER_MS), 0);   /* (re)starts it */
+}
+
+/* nobody has needed the network for a while: leave it, the radio is the BMS's */
+static void idle_cb(TimerHandle_t t)
+{
+    (void)t;
+    if (xSemaphoreTake(s_lock, pdMS_TO_TICKS(200)) != pdTRUE) return;
+    if (s_users == 0 && s_want) {
+        ESP_LOGI(TAG, "leaving \"%s\" (idle)", s_ssid);
+        s_want = false;
+        s_connected = false;
+        xEventGroupClearBits(s_events, BIT_CONNECTED);
+        esp_wifi_disconnect();
+    }
+    xSemaphoreGive(s_lock);
 }
 
 bool netw_is_connected(void) { return s_connected; }
@@ -295,24 +379,16 @@ void netw_connect(const char *ssid, const char *pass)
 {
     if (!ssid || !ssid[0]) return;
     save_creds(ssid, pass ? pass : "");
+    if (!s_ready) return;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
     s_retry = 0;
+    s_want = true;                          /* join now to show whether it works ... */
     apply_config(ssid, pass ? pass : "");
     esp_wifi_disconnect();
     esp_wifi_connect();
+    xSemaphoreGive(s_lock);
     ESP_LOGI(TAG, "connecting to \"%s\"", ssid);
-}
-
-/* Drop and re-join the saved network (e.g. the printer's Wi-Fi Direct after
- * the printer slept or restarted). */
-void netw_reconnect(void)
-{
-    if (!s_have_creds) return;
-    ESP_LOGW(TAG, "re-joining \"%s\"", s_ssid);
-    s_retry = 0;
-    s_connected = false;
-    if (s_events) xEventGroupClearBits(s_events, BIT_CONNECTED);
-    esp_wifi_disconnect();
-    esp_wifi_connect();
+    if (s_users == 0) xTimerChangePeriod(s_idle_t, pdMS_TO_TICKS(LINGER_SETUP_MS), 0);   /* ... then leave */
 }
 
 /* after the quick retries ran out (printer off for a while), keep trying
@@ -320,7 +396,7 @@ void netw_reconnect(void)
 static void retry_cb(TimerHandle_t t)
 {
     (void)t;
-    if (s_have_creds && !s_connected && s_retry >= WIFI_RETRY_MAX) {
+    if (s_want && s_have_creds && !s_connected && s_retry >= WIFI_RETRY_MAX) {
         s_retry = 0;
         esp_wifi_connect();
     }

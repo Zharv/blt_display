@@ -31,7 +31,9 @@ static void save_and_report(const netw_printer_t *p)
 static void scan_task(void *arg)
 {
     (void)arg;
-    s_scan_n = netw_scan_printers(s_printers, (int)(sizeof s_printers / sizeof s_printers[0]));
+    int n = netw_acquire(20000) ? netw_scan_printers(s_printers, (int)(sizeof s_printers / sizeof s_printers[0])) : 0;
+    netw_release();
+    s_scan_n = n;
     vTaskDelete(NULL);
 }
 
@@ -75,15 +77,21 @@ static void use_ip_cb(lv_event_t *e)
 static void poll_cb(lv_timer_t *t)
 {
     (void)t;
-    static bool direct_shown;
+    /* the printer's own network: 1 saved (joined for a print only), 2 joined now */
+    static int shown;
     char ssid[33];
     netw_get_ssid(ssid, sizeof ssid);
-    bool direct = netw_is_connected() && strncmp(ssid, "DIRECT-", 7) == 0;
-    if (direct && !direct_shown && s_scan_n == -1) {
-        lv_label_set_text_fmt(s_status, LV_SYMBOL_OK " Wi-Fi Direct:  %.32s", ssid);
-        lv_obj_set_style_text_color(s_status, C_GREEN, 0);
+    int direct = strncmp(ssid, "DIRECT-", 7) != 0 ? 0 : netw_is_connected() ? 2 : 1;
+    if (direct != shown && s_scan_n == -1) {
+        if (direct == 2) {
+            lv_label_set_text_fmt(s_status, LV_SYMBOL_OK " Wi-Fi Direct:  %.32s", ssid);
+            lv_obj_set_style_text_color(s_status, C_GREEN, 0);
+        } else if (direct == 1) {
+            lv_label_set_text_fmt(s_status, "Wi-Fi Direct:  %.32s  ·  %s", ssid, tr(S_PRN_ON_DEMAND));
+            lv_obj_set_style_text_color(s_status, C_SUB, 0);
+        }
+        shown = direct;
     }
-    direct_shown = direct;
     if (s_scan_n < 0) return;
     int n = s_scan_n;
     s_scan_n = -1;

@@ -115,14 +115,19 @@ static void poll_cb(lv_timer_t *t)
         }
         lv_label_set_text_fmt(s_status, tr(S_WIFI_FOUND), n);
     }
-    char ip[20];
+    char ip[20], ssid[33];
     netw_get_ip_str(ip, sizeof ip);
+    netw_get_ssid(ssid, sizeof ssid);
+    static bool was_up;
     if (ip[0]) {
-        char ssid[33];
-        netw_get_ssid(ssid, sizeof ssid);
         lv_label_set_text_fmt(s_status, LV_SYMBOL_OK " %s   %s", ssid, ip);
         lv_obj_set_style_text_color(s_status, C_GREEN, 0);
+    } else if (was_up && ssid[0] && !netw_is_joining()) {
+        /* left on purpose: the network is joined for a print only */
+        lv_label_set_text_fmt(s_status, "%.32s  ·  %s", ssid, tr(S_PRN_ON_DEMAND));
+        lv_obj_set_style_text_color(s_status, C_SUB, 0);
     }
+    was_up = ip[0] != 0;
 }
 
 lv_obj_t *ui_wifi_create(void)
@@ -139,6 +144,11 @@ lv_obj_t *ui_wifi_create(void)
     lv_obj_align(scan, LV_ALIGN_TOP_RIGHT, -16, 10);
     s_status = ui_label(c, tr(S_WIFI_HINT), 20, C_SUB);
     lv_obj_set_pos(s_status, 16, 66);
+    {
+        char ssid[33];
+        netw_get_ssid(ssid, sizeof ssid);
+        if (ssid[0]) lv_label_set_text_fmt(s_status, "%.32s  ·  %s", ssid, tr(S_PRN_ON_DEMAND));
+    }
 
     s_list = ui_list(c, 16, 104, 420, CONTENT_H - 120);
 

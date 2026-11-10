@@ -11,15 +11,25 @@
 extern "C" {
 #endif
 
-/* Bring up NVS, ESP-Hosted, Wi-Fi STA. Connects if credentials are saved in NVS
- * (or set via CONFIG_BLT_WIFI_SSID); otherwise idles until netw_connect().
- * Returns false if the C6 did not come up (no Wi-Fi/BLE this boot). */
+/* Bring up NVS, ESP-Hosted, Wi-Fi STA. Does not join a network: see
+ * netw_acquire(). Returns false if the C6 did not come up (no Wi-Fi/BLE this
+ * boot). */
 bool netw_start(void);
 
 bool netw_is_connected(void);
+bool netw_is_joining(void);
 bool netw_wait_connected(uint32_t timeout_ms);
-/* drop and re-join the saved network */
-void netw_reconnect(void);
+
+/* The saved network is joined only while somebody needs it (the C6 radio is
+ * shared with the BMS BLE link). netw_acquire() joins and waits up to
+ * timeout_ms for an address (0: just start joining) and returns whether the
+ * network is up; netw_release() lets it go ~15 s after the last user. Always
+ * call them in pairs. */
+bool netw_acquire(uint32_t timeout_ms);
+void netw_release(void);
+
+/* log a connectivity test (console) */
+void netw_diag(void);
 
 typedef struct {
     char    ssid[33];
@@ -30,7 +40,8 @@ typedef struct {
 /* Scan for access points (blocking ~2 s). Returns the count written to out. */
 int  netw_scan(netw_ap_t *out, int max);
 
-/* Save credentials to NVS and (re)connect. */
+/* Save credentials to NVS and join now to show the result; the network is
+ * left again a minute later. */
 void netw_connect(const char *ssid, const char *pass);
 
 /* Current IP as a string, or "" when not connected. */

@@ -89,7 +89,7 @@ static const char *const STR[S__COUNT][2] = {
     [S_PRN_MANUAL]      = { "IP принтера вручну:", "Printer IP manually:" },
     [S_PRN_USE_IP]      = { "Використати IP", "Use this IP" },
     [S_PRN_ENTER_IP]    = { "спершу введи IP", "enter an IP first" },
-    [S_PRN_DIRECT]      = { "У мережі Wi-Fi Direct (DIRECT-…) принтером автоматично стає точка доступу.", "On a Wi-Fi Direct network (DIRECT-…) the access point is used as the printer." },
+    [S_PRN_DIRECT]      = { "У мережі Wi-Fi Direct (DIRECT-…) принтером автоматично стає точка доступу. Панель підключається до неї лише на час друку, щоб Wi-Fi не заважав Bluetooth (BMS).", "On a Wi-Fi Direct network (DIRECT-…) the access point is used as the printer. The panel joins it only while printing, so Wi-Fi does not disturb Bluetooth (BMS)." },
 
     [S_BMS_TITLE]       = { "BMS по Bluetooth", "BMS over Bluetooth" },
     [S_BMS_HINT]        = { "Натисніть «Пошук» і виберіть BMS (розпізнані JK і Daly — зверху)", "Tap Scan and pick the BMS (recognised JK and Daly listed first)" },
@@ -186,6 +186,7 @@ static const char *const STR[S__COUNT][2] = {
     [S_PREP_RAM_OLD]    = { "тестер досі працює зі старим номером", "the tester still uses the old serial" },
     [S_PREP_WORKING]    = { "Тест піде з номером", "The test will run with" },
     [S_PR_NO_TEST]      = { "немає завершеного тесту для друку", "no finished test to print" },
+    [S_PRN_ON_DEMAND]   = { "лише на час друку", "only while printing" },
 };
 
 void i18n_init(void)

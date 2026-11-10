@@ -106,13 +106,10 @@ static esp_err_t send_once(const raster_t *r, uint32_t dpi, const char *job_name
 
 esp_err_t print_job_send_raster(const raster_t *r, uint32_t dpi, const char *job_name)
 {
-    if (!netw_is_connected()) {                    /* e.g. retries ran out while the printer was off */
-        netw_reconnect();
-        netw_wait_connected(20000);
-    }
-    /* no forced Wi-Fi re-join on a stalled upload: that dropped the link (and
-     * the BMS) for nothing; the network layer reconnects on a real loss */
-    esp_err_t e = send_once(r, dpi, job_name);
+    /* the printer's network is joined for the job only (shared radio: BLE) */
+    bool up = netw_acquire(25000);
+    esp_err_t e = up ? send_once(r, dpi, job_name) : ESP_ERR_INVALID_STATE;
+    netw_release();
     return e == ESP_ERR_TIMEOUT ? ESP_FAIL : e;
 }
 
@@ -182,8 +179,9 @@ static void query_task(void *arg)
 {
     char host[64], resource[64], uri[192], url[192];
     uint16_t port = 631;
-    if (!netw_is_connected() || !netw_resolve_printer(host, sizeof host, &port, resource, sizeof resource)) {
+    if (!netw_acquire(20000) || !netw_resolve_printer(host, sizeof host, &port, resource, sizeof resource)) {
         ESP_LOGW(TAG, "attrs: no printer");
+        netw_release();
         vTaskDelete(NULL);
     }
     snprintf(uri, sizeof uri, "ipp://%s:%u%s", host, (unsigned)port, resource);
@@ -207,6 +205,7 @@ static void query_task(void *arg)
     esp_http_client_cleanup(cli);
     if (got > 0) log_attrs(resp, got);
     heap_caps_free(resp);
+    netw_release();
     vTaskDelete(NULL);
 }
 

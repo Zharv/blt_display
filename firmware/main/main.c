@@ -271,7 +271,8 @@ static void frame_refresh(const online_sample_t *o)
     char ssid[33];
     netw_get_ssid(ssid, sizeof ssid);
     bool wifi_up = netw_is_connected();
-    st.wifi = wifi_up ? IND_OK : ssid[0] ? IND_BUSY : IND_OFF;
+    /* joined only for a print: grey while idle, amber while joining */
+    st.wifi = wifi_up ? IND_OK : netw_is_joining() ? IND_BUSY : IND_OFF;
     snprintf(wifi, sizeof wifi, "%.24s", ssid[0] ? ssid : "—");
     st.wifi_text = wifi;
 
@@ -286,7 +287,7 @@ static void frame_refresh(const online_sample_t *o)
         slow = 4;
         netw_printer_t p;
         bool have = netw_get_printer(&p) || strncmp(ssid, "DIRECT-", 7) == 0;
-        prn = !have ? IND_OFF : wifi_up ? IND_OK : IND_BUSY;
+        prn = !have ? IND_OFF : netw_is_joining() ? IND_BUSY : IND_OK;
     }
     st.printer = prn;
 
@@ -758,11 +759,7 @@ static void netw_task(void *arg)
         vTaskDelete(NULL);
         return;
     }
-    bms_ble_start();       /* BLE host over the same C6 */
-    if (netw_wait_connected(60000)) {
-        esp_sntp_config_t sc = ESP_NETIF_SNTP_DEFAULT_CONFIG("pool.ntp.org");
-        esp_netif_sntp_init(&sc);
-    }
+    bms_ble_start();       /* BLE host over the same C6; Wi-Fi is joined on demand */
     vTaskDelete(NULL);
 }
 

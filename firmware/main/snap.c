@@ -4,6 +4,7 @@
 #include "print_job.h"
 #include "sd_store.h"
 #include "doc_print.h"
+#include "netw.h"
 #include "ui_common.h"
 
 #include <stdio.h>
@@ -176,6 +177,7 @@ static void run_cmd(const char *line)
         else if (strncmp(line, "BMS ", 4) == 0) snap_bms_connect(line + 4);
         else if (strcmp(line, "BMSOFF") == 0) snap_bms_disconnect();
         else if (strcmp(line, "IPPATTR") == 0) print_job_query_attrs();
+        else if (strcmp(line, "NETDIAG") == 0) netw_diag();
         else if (strcmp(line, "SD") == 0) sd_store_selftest();
         else if (strcmp(line, "HEAP") == 0) {
             ESP_LOGI("snap", "heap: internal %u (largest %u, min %u), dma %u (largest %u), psram %u",
