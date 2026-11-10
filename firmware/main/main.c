@@ -638,10 +638,12 @@ static void toast_locked(const char *msg)
 static void print_done(esp_err_t e)
 {
     ESP_LOGI(TAG, "print result: %s", esp_err_to_name(e));
-    char msg[64];
-    snprintf(msg, sizeof msg, "%s  %s", e == ESP_OK ? LV_SYMBOL_OK : LV_SYMBOL_WARNING,
-             tr(e == ESP_OK ? S_PR_OK : e == ESP_ERR_NOT_FOUND ? S_PR_NOT_FOUND :
-                e == ESP_ERR_INVALID_STATE ? S_PR_NO_WIFI : S_PR_FAILED));
+    char msg[112];
+    if (e == ESP_OK || e == ESP_ERR_NOT_FOUND || e == ESP_ERR_INVALID_STATE)
+        snprintf(msg, sizeof msg, "%s  %s", e == ESP_OK ? LV_SYMBOL_OK : LV_SYMBOL_WARNING,
+                 tr(e == ESP_OK ? S_PR_OK : e == ESP_ERR_NOT_FOUND ? S_PR_NOT_FOUND : S_PR_NO_WIFI));
+    else    /* the code tells which step failed */
+        snprintf(msg, sizeof msg, "%s  %s (%s)", LV_SYMBOL_WARNING, tr(S_PR_FAILED), esp_err_to_name(e));
     toast_locked(msg);
     s_printing = false;
 }

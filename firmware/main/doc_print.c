@@ -84,7 +84,19 @@ static esp_err_t build_and_print(void)
             && !sd_arch_has(t->rec.pr_test, t->rec.pr_cycle))
             sd_arch_save(t);
     }
-    if (e != ESP_OK) { heap_caps_free(t); return e; }
+    /* no tester on the cable: the newest finished test on the card */
+    if (e != ESP_OK && !from_sd && s_x.cycle == BLT_ARCH_CURRENT) {
+        const int MAXE = 160;
+        blt_arch_entry_t *ls = heap_caps_malloc(MAXE * sizeof *ls, MALLOC_CAP_SPIRAM);
+        int nl = ls ? sd_arch_list(ls, MAXE) : 0;
+        if (nl > 0 && sd_arch_load(ls[0].n, t) == ESP_OK) {
+            ESP_LOGI(TAG, "tester: %s - printing cycle %u from the SD card", esp_err_to_name(e), ls[0].n);
+            e = ESP_OK;
+            from_sd = true;
+        }
+        heap_caps_free(ls);
+    }
+    if (e != ESP_OK) { ESP_LOGE(TAG, "no test to print: %s", esp_err_to_name(e)); heap_caps_free(t); return e; }
     const blt_rec_t *rc = &t->rec;
 
     /* what the panel saw of this test (BMS): live values for the current test,

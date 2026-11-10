@@ -53,7 +53,9 @@ static esp_err_t send_once(const raster_t *r, uint32_t dpi, const char *job_name
     esp_http_client_config_t cfg = {
         .url = url,
         .method = HTTP_METHOD_POST,
-        .timeout_ms = 30000,
+        /* a sleeping printer takes the first data very slowly while it wakes
+         * (one 4 KB write blocked ~36 s): 30 s gave "print failed" */
+        .timeout_ms = 120000,
     };
     esp_http_client_handle_t cli = esp_http_client_init(&cfg);
     esp_http_client_set_header(cli, "Content-Type", "application/ipp");

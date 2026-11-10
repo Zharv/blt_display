@@ -168,6 +168,11 @@ static void run_cmd(const char *line)
         else if (strcmp(line, "PROTO") == 0) snap_protocol(false, 0xFFFF);
         else if (strncmp(line, "PROTO ", 6) == 0) snap_protocol(false, (uint16_t)atoi(line + 6));
         else if (strcmp(line, "PROTOPRINT") == 0) snap_protocol(true, 0xFFFF);
+        else if (strncmp(line, "PROTOPRINT ", 11) == 0) {      /* print one archive cycle */
+            bsp_display_lock(0);
+            app_print_protocol((uint16_t)atoi(line + 11));
+            bsp_display_unlock();
+        }
         else if (strncmp(line, "ARSEL ", 6) == 0) ui_archive_dev(atoi(line + 6), false);
         else if (strcmp(line, "AREDIT") == 0) ui_archive_dev(-1, true);
     }

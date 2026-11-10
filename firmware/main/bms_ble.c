@@ -63,6 +63,9 @@ static int s_scan_max, s_scan_n;
 static SemaphoreHandle_t s_scan_done;
 
 static esp_timer_handle_t s_reconnect_t;
+static volatile bool s_hold;               /* printing: no BLE radio work */
+static volatile int64_t s_hold_end_us;
+static int s_conn_fails;                   /* back-off for an absent BMS */
 static esp_timer_handle_t s_kick_t;
 static int64_t s_link_us;       /* when notifications were enabled */
 
@@ -284,13 +287,24 @@ static void daly_feed(const uint8_t *d, size_t n)
 
 /* while printing, the C6 radio is busy with the Wi-Fi upload and BLE
  * notifications stall: don't kick or drop the BMS then */
-static volatile bool s_hold;
-static volatile int64_t s_hold_end_us;
 
+/* Printing: pause the BMS link work. Besides polling this stops connection
+ * attempts to an absent BMS - the initiator keeps the radio (shared with
+ * Wi-Fi on the C6) listening most of the time, and the print upload over
+ * Wi-Fi Direct dropped to ~1 KB/s until the HTTP timeout. */
 void bms_ble_hold(bool on)
 {
     s_hold = on;
-    if (!on) s_hold_end_us = esp_timer_get_time();
+    if (on) {
+        esp_timer_stop(s_reconnect_t);
+        if (s_state == BMS_BLE_CONNECTING) ble_gap_conn_cancel();
+    } else {
+        s_hold_end_us = esp_timer_get_time();
+        if (s_have_target && s_conn == BLE_HS_CONN_HANDLE_NONE) {
+            esp_timer_stop(s_reconnect_t);
+            esp_timer_start_once(s_reconnect_t, 1000 * 1000);
+        }
+    }
 }
 
 static void kick_cb(void *arg)
@@ -462,6 +476,7 @@ static int on_mtu(uint16_t conn, const struct ble_gatt_error *err, uint16_t mtu,
 static void start_connect(void)
 {
     if (!s_synced || !s_have_target || s_conn != BLE_HS_CONN_HANDLE_NONE) return;
+    if (s_hold) return;                     /* bms_ble_hold(false) restarts it */
     ble_gap_disc_cancel();
     ble_addr_t a = { .type = s_target.addr_type };
     memcpy(a.val, s_target.addr, 6);
@@ -582,6 +597,7 @@ static int gap_event(struct ble_gap_event *ev, void *arg)
             s_frames = 0;
             s_variant_hint = -1;
             ESP_LOGI(TAG, "connected");
+            s_conn_fails = 0;
             ble_gattc_exchange_mtu(s_conn, on_mtu, NULL);
             s_kind = s_target.kind;
             if (s_kind == BMS_KIND_DALY)
@@ -592,7 +608,9 @@ static int gap_event(struct ble_gap_event *ev, void *arg)
             ESP_LOGW(TAG, "connect failed: %d", ev->connect.status);
             s_conn = BLE_HS_CONN_HANDLE_NONE;
             s_state = BMS_BLE_ERROR;
-            if (s_have_target) esp_timer_start_once(s_reconnect_t, 5000 * 1000);
+            if (s_conn_fails < 3) s_conn_fails++;
+            static const uint32_t back_s[] = { 5, 5, 10, 30 };   /* by s_conn_fails 1..3 */
+            if (s_have_target && !s_hold) esp_timer_start_once(s_reconnect_t, back_s[s_conn_fails] * 1000000ULL);
         }
         return 0;
 
