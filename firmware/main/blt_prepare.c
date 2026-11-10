@@ -82,9 +82,12 @@ esp_err_t blt_prepare_write(const char *serial, uint16_t rated_ah, char *msg, si
     }
 
     bool id_ch = memcmp(id, id0, sizeof id) != 0, cfg_ch = memcmp(cfg, cfg0, sizeof cfg) != 0;
-    /* the EEPROM may already hold the values while the tester's RAM (what the
-     * test records) still has the old serial: then only the reload is needed */
-    bool ram_stale = serial && serial[0] && strcmp(l.battery_id, serial) != 0;
+    /* the EEPROM may already hold the values while the tester's working ID
+     * block (what the next test records) still has the old serial: then only
+     * the reload is needed */
+    char work[20] = "";
+    bool ram_stale = serial && serial[0] && blt_usb_read_work_serial(work, sizeof work) == ESP_OK
+                     && strcmp(work, serial) != 0;
     if (!id_ch && !cfg_ch && !ram_stale) {
         snprintf(msg, n, "%s", tr(S_PREP_SAME));
         return ESP_OK;
@@ -109,13 +112,13 @@ esp_err_t blt_prepare_write(const char *serial, uint16_t rated_ah, char *msg, si
         snprintf(msg, n, "%s (RE 03: %s)", tr(S_PREP_WRITE_FAIL), esp_err_to_name(e));
         return e;
     }
-    /* the working copy (RI 0x76) must now carry the new serial */
+    /* the working ID block must now carry the new serial (the test copies it
+     * into its record when it starts) */
     if (serial && serial[0]) {
-        blt_live_t now;
-        e = blt_usb_read_live(&now);
-        if (e == ESP_OK && strcmp(now.battery_id, serial) != 0) {
-            ESP_LOGE(TAG, "after RE 03 the tester still has serial '%s'", now.battery_id);
-            snprintf(msg, n, "%s: %s", tr(S_PREP_RAM_OLD), now.battery_id);
+        e = blt_usb_read_work_serial(work, sizeof work);
+        if (e == ESP_OK && strcmp(work, serial) != 0) {
+            ESP_LOGE(TAG, "after RE 03 the tester still has serial '%s'", work);
+            snprintf(msg, n, "%s: %s", tr(S_PREP_RAM_OLD), work);
             return ESP_ERR_INVALID_RESPONSE;
         }
         if (e != ESP_OK) {

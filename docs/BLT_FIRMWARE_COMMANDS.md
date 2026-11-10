@@ -131,6 +131,15 @@ reads as N=1.
 | 0x70 | `RAM[0x0300]=0x55` (0x3EFC..0x3F00), `CALL 0x1470C` (UCON=0, UIE=0, USB state=0: **USB detach**), **`RESET`** (0x3F06) | "reset graph pointer" ✘ |
 | other | `L[13]=1` → **NAK** (0x3F14) | – |
 
+Working battery-ID block vs. the record serial [proven on the tester, 2026-11-10]:
+* `0x261E` loads the ID block into RAM at `0x03B8` (serial at `0x03B9`, 16 chars, space padded).
+* A test copies that serial into its record (`RI 0x76`) only on a state change (`0xB002` → `0x11F2E` →
+  `0x11D98`, copy at `0x11E40`). In START `RI 0x76` is still the serial of the **previous** test, so it cannot
+  be used to check a `WD` + `RE 0x03`.
+* `RI` does not bound its address, so the working block is readable: the serial is at **`RI 0x09B6`**
+  (dump of `RI 0x09A0..0x09DF` showed it there, followed by spaces). The panel reads only this bank-3 window
+  (`blt_usb_read_ram3`), never higher (SFRs).
+
 `RE 0x01` detail (0x11E82, 0x9086):
 * Discharge-start timestamp `RI[0x2C..0x30]` := RTC.
 * `RI[0x31..0x3F]` (charge start, durations, pauses) := 0.

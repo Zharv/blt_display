@@ -51,6 +51,12 @@ esp_err_t blt_usb_read_live(blt_live_t *out);
 /* Read len bytes with RI/RD/RB in 64-byte frames (quiet, 2 tries per frame). */
 esp_err_t blt_usb_read_block(blt_cmd_t cmd, uint32_t addr, uint8_t *dst, uint16_t len);
 
+/* The battery serial the next test will record: the tester's working
+ * battery-ID block in RAM (0x03B9, via RI 0x09B6). Read only. */
+#define BLT_RI_WORK_SERIAL 0x09B6   /* RAM 0x03B9: the RI window starts 3 bytes in (measured) */
+esp_err_t blt_usb_read_work_serial(char *out, size_t n);
+esp_err_t blt_usb_read_ram3(uint16_t ri_addr, uint8_t *dst, uint8_t len);
+
 /* The only write path: arm once, then write one sealed block - the battery-ID
  * block (0x40, 50 B) or the settings block (0x100, 62 B). Used by blt_prepare
  * only, after it has checked that the tester is in START. */

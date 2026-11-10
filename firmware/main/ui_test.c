@@ -27,6 +27,7 @@ static lv_obj_t *s_scr, *s_state, *s_now, *s_work, *s_sn, *s_ah, *s_write, *s_re
 /* worker results, applied by the LVGL timer */
 static volatile int s_read_done;            /* 1 = values below are fresh */
 static char s_cur_sn[20];
+static char s_work_sn[20];                  /* tester's working ID block (RAM) */
 static uint16_t s_cur_ah;
 static volatile bool s_busy;
 static volatile int s_write_done;           /* 1 ok, -1 failed */
@@ -42,6 +43,7 @@ static void read_task(void *arg)
     if (blt_prepare_read(sn, sizeof sn, &ah) == ESP_OK) {
         strlcpy(s_cur_sn, sn, sizeof s_cur_sn);
         s_cur_ah = ah;
+        if (blt_usb_read_work_serial(sn, sizeof sn) == ESP_OK) strlcpy(s_work_sn, sn, sizeof s_work_sn);
         s_read_done = 1;
     }
     s_busy = false;
@@ -59,6 +61,13 @@ static void write_task(void *arg)
         if (blt_prepare_read(sn, sizeof sn, &ah) == ESP_OK) {
             strlcpy(s_cur_sn, sn, sizeof s_cur_sn);
             s_cur_ah = ah;
+            s_read_done = 1;
+        }
+    }
+    {
+        char w[20];
+        if (blt_usb_read_work_serial(w, sizeof w) == ESP_OK) {
+            strlcpy(s_work_sn, w, sizeof s_work_sn);
             s_read_done = 1;
         }
     }
@@ -115,11 +124,12 @@ static void poll_cb(lv_timer_t *t)
     else lv_label_set_text_fmt(s_state, "%s:  %s", tr(S_PREP_STATE), blt_state_name_it(l.state));
     lv_obj_set_style_text_color(s_state, start ? C_GREEN : C_AMBER, 0);
 
-    /* the serial the next test will record (the tester's RAM copy, RI 0x76);
+    /* the serial the next test will record (the tester's working ID block in
+     * RAM; RI 0x76 is only the last record's copy until the test starts);
      * amber when it differs from what is stored in its EEPROM */
-    if (live) {
-        bool differs = s_cur_sn[0] && strcmp(l.battery_id, s_cur_sn) != 0;
-        lv_label_set_text_fmt(s_work, "%s:  %s", tr(S_PREP_WORKING), l.battery_id[0] ? l.battery_id : "—");
+    if (live && s_work_sn[0]) {
+        bool differs = s_cur_sn[0] && strcmp(s_work_sn, s_cur_sn) != 0;
+        lv_label_set_text_fmt(s_work, "%s:  %s", tr(S_PREP_WORKING), s_work_sn);
         lv_obj_set_style_text_color(s_work, differs ? C_AMBER : C_TXT, 0);
     } else {
         lv_label_set_text(s_work, "");

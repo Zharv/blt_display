@@ -298,6 +298,50 @@ esp_err_t blt_usb_read_live(blt_live_t *out)
     return blt_live_decode(blk, sizeof blk, out) ? ESP_OK : ESP_FAIL;
 }
 
+/* The serial the next test will record. The tester keeps the battery-ID block
+ * in RAM at 0x03B8 (loaded from EEPROM 0x40 at power-on and by RE 0x03,
+ * routine 0x261E); a test copies ID+1 (16 chars) into its record (RI 0x76)
+ * on every state change (0xB002 -> 0x11F2E -> 0x11D98, copy at 0x11E40), so
+ * in START RI 0x76 still shows the previous test's serial. RI computes
+ * FSR0 = 0x0A00 + addr per byte in the 12-bit data space (0x3974..0x398A),
+ * so the block is reachable through RI in data bank 3 - plain RAM, no SFRs
+ * on the way. Measured on the tester: the serial starts at RI 0x09B6. */
+/* RI beyond the record: only the window that lands in data bank 3 (plain
+ * RAM, no SFRs whose read has side effects). */
+esp_err_t blt_usb_read_ram3(uint16_t ri_addr, uint8_t *dst, uint8_t len)
+{
+    if (ri_addr < 0x0900 || len == 0 || len > 64 || ri_addr + len > 0x0A00) return ESP_ERR_INVALID_ARG;
+    if (!s_reads_allowed) return ESP_ERR_NOT_ALLOWED;
+    if (!s_dev) return ESP_ERR_INVALID_STATE;
+    static blt_response_t r;
+    uint8_t frame[BLT_REQ_HEADER_LEN + 8];
+    size_t fl = blt_build_frame(frame, sizeof frame, BLT_NODE_DEFAULT, BLT_CMD_RI, ri_addr, NULL, len);
+    if (!fl) return ESP_ERR_INVALID_SIZE;
+    s_quiet = true;
+    blt_err_t be = BLT_OK;
+    esp_err_t e = txn(BLT_CMD_RI, ri_addr, frame, fl, &r, &be, 2600);
+    s_quiet = false;
+    if (e == ESP_OK && r.payload_len != len) e = ESP_ERR_INVALID_SIZE;
+    if (e == ESP_OK) memcpy(dst, r.payload, len);
+    return e;
+}
+
+esp_err_t blt_usb_read_work_serial(char *out, size_t n)
+{
+    uint8_t b[16];
+    esp_err_t e = blt_usb_read_ram3(BLT_RI_WORK_SERIAL, b, sizeof b);
+    if (e != ESP_OK) return e;
+    size_t k = 0;
+    for (; k < 16 && k + 1 < n; k++) {
+        uint8_t c = b[k];
+        if (c < 0x20 || c > 0x7E) break;
+        out[k] = (char)c;
+    }
+    while (k && out[k - 1] == ' ') k--;
+    out[k] = '\0';
+    return ESP_OK;
+}
+
 /* Read len bytes (RI/RD/RB) in 64-byte frames, quietly, 2 attempts per frame. */
 esp_err_t blt_usb_read_block(blt_cmd_t cmd, uint32_t addr, uint8_t *dst, uint16_t len)
 {

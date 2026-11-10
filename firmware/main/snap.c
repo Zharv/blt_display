@@ -148,6 +148,20 @@ static void run_cmd(const char *line)
         else if (strncmp(line, "CELL ", 5) == 0) snap_cell(atoi(line + 5));
         else if (strncmp(line, "BLTALLOW ", 9) == 0) blt_usb_allow_reads(atoi(line + 9) != 0);
         else if (strcmp(line, "BLTONCE") == 0) snap_blt_once();
+        else if (strcmp(line, "WORKSN") == 0) {             /* tester working serial (RAM ID block) */
+            char w[20] = "";
+            esp_err_t e = blt_usb_read_work_serial(w, sizeof w);
+            ESP_LOGI("snap", "working serial: %s (%s)", w, esp_err_to_name(e));
+        }
+        else if (strncmp(line, "RAM3 ", 5) == 0) {          /* "RAM3 09A0 40": RI window into bank 3 */
+            unsigned a = 0, n = 0;
+            uint8_t b[64];
+            if (sscanf(line + 5, "%x %x", &a, &n) == 2) {
+                esp_err_t e = blt_usb_read_ram3((uint16_t)a, b, (uint8_t)n);
+                ESP_LOGI("snap", "RAM3 %04X: %s", a, esp_err_to_name(e));
+                if (e == ESP_OK) ESP_LOG_BUFFER_HEXDUMP("snap", b, n, ESP_LOG_INFO);
+            }
+        }
         else if (strncmp(line, "BLTPOLL ", 8) == 0) blt_live_poll_enable(atoi(line + 8) != 0);
         else if (strncmp(line, "BLT ", 4) == 0) {        /* "BLT RD 000000 0010" - reads only */
             char cmd[3] = { 0 };
