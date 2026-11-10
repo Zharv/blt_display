@@ -28,6 +28,9 @@ typedef struct {
     bool     detailed;          /* detailed protocol (analysis, table, imbalance graph) */
 } doc_extra_t;
 
+/* print result: no finished test to print (tester and SD card) */
+#define DOC_ERR_NO_TEST 0x7101
+
 /* Start in a background task. print=false only logs the page data (DOC* lines)
  * for the host preview. done (may be NULL) is called from that task. */
 bool doc_print_protocol(const doc_extra_t *x, bool print, void (*done)(esp_err_t));

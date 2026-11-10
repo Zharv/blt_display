@@ -96,7 +96,11 @@ static esp_err_t build_and_print(void)
         }
         heap_caps_free(ls);
     }
-    if (e != ESP_OK) { ESP_LOGE(TAG, "no test to print: %s", esp_err_to_name(e)); heap_caps_free(t); return e; }
+    if (e != ESP_OK) {
+        ESP_LOGE(TAG, "no test to print: %s", esp_err_to_name(e));
+        heap_caps_free(t);
+        return e == ESP_ERR_NOT_FOUND ? DOC_ERR_NO_TEST : e;   /* NOT_FOUND means "no printer" to the UI */
+    }
     const blt_rec_t *rc = &t->rec;
 
     /* what the panel saw of this test (BMS): live values for the current test,

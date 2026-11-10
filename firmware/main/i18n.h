@@ -49,6 +49,7 @@ typedef enum {
     S_AR_DETAILED,
     S_AR_SN_EDIT, S_AR_SN_TESTER,
     S_PREP_RAM_OLD, S_PREP_WORKING,
+    S_PR_NO_TEST,
     S__COUNT
 } str_id_t;
 

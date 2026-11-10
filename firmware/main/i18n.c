@@ -185,6 +185,7 @@ static const char *const STR[S__COUNT][2] = {
     [S_AR_SN_TESTER]    = { "у тестері", "tester:" },
     [S_PREP_RAM_OLD]    = { "тестер досі працює зі старим номером", "the tester still uses the old serial" },
     [S_PREP_WORKING]    = { "Тест піде з номером", "The test will run with" },
+    [S_PR_NO_TEST]      = { "немає завершеного тесту для друку", "no finished test to print" },
 };
 
 void i18n_init(void)

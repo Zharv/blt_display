@@ -15,6 +15,7 @@
 #include "driver/usb_serial_jtag.h"
 #include "driver/usb_serial_jtag_vfs.h"
 #include "esp_log.h"
+#include "esp_heap_caps.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "bsp/esp-bsp.h"
@@ -176,6 +177,15 @@ static void run_cmd(const char *line)
         else if (strcmp(line, "BMSOFF") == 0) snap_bms_disconnect();
         else if (strcmp(line, "IPPATTR") == 0) print_job_query_attrs();
         else if (strcmp(line, "SD") == 0) sd_store_selftest();
+        else if (strcmp(line, "HEAP") == 0) {
+            ESP_LOGI("snap", "heap: internal %u (largest %u, min %u), dma %u (largest %u), psram %u",
+                     (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                     (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+                     (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),
+                     (unsigned)heap_caps_get_free_size(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL),
+                     (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL),
+                     (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+        }
         else if (strcmp(line, "PRINTTEST") == 0) doc_print_test_page();
         else if (strcmp(line, "SDLS") == 0) sd_store_ls(NULL);
         else if (strncmp(line, "SDLS ", 5) == 0) sd_store_ls(line + 5);

@@ -213,3 +213,15 @@ CONFIG_USB_HOST_SET_ADDR_RECOVERY_MS=50
 # SD card archive: long file names
 CONFIG_FATFS_LFN_HEAP=y
 CONFIG_FATFS_MAX_LFN=255
+
+# Internal RAM. With the defaults (every malloc < 16 KB internal, 32 KB
+# reserve) the UI ate the internal heap: ~5 KB of DMA-capable memory was left,
+# the ESP-Hosted SDIO link to the C6 starved in the middle of a print upload
+# and then hung (Wi-Fi "connected" but dead, BLE HCI timeouts). Send plain
+# mallocs above 2 KB to the PSRAM and keep 64 KB for DMA / internal-only users
+# (the P4 has ~210 KB of internal heap in all: a 128 KB reserve cannot be taken
+# and the startup code aborts).
+CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=2048
+CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=65536
+# NimBLE host pools (~20 KB) live in the PSRAM too
+CONFIG_BT_NIMBLE_MEM_ALLOC_MODE_EXTERNAL=y
